@@ -1,0 +1,47 @@
+# =========================
+# QDArchive Seeding Project
+# =========================
+
+# --- Data files (large, downloaded datasets) ---
+data/
+*.zip
+*.tar.gz
+*.tar
+*.7z
+*.rar
+
+# --- OS files ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# --- IDE / Editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+.venv/
+venv/
+env/
+.env
+
+# --- Jupyter Notebooks ---
+.ipynb_checkpoints/
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Temporary files ---
+tmp/
+temp/
