@@ -68,7 +68,11 @@ The pipeline runs in three sequential phases:
 
 Searches each repository using 10 configured search queries (things like `"qdpx"`, `"qualitative data analysis"`, `"MAXQDA"`, `"interview transcript qualitative"`, etc.). For each result, it pulls project-level metadata (title, authors, DOI, description, license, keywords) and a file manifest (filenames, sizes, extensions, download URLs). Everything goes into the SQLite database using upsert logic, so re-running the pipeline updates existing records without creating duplicates.
 
-**Harvard Dataverse:** Uses the standard Dataverse Search API (`/api/search`). For each dataset found, a second request fetches detailed file metadata via `/api/datasets/:persistentId/`.
+**Harvard Dataverse:** Uses the standard Dataverse Search API (`/api/search`) in two phases:
+- **Phase A (dataset search):** Searches with `type=dataset` to find datasets whose metadata matches the queries. For each result, a detail request to `/api/datasets/:persistentId/` fetches the file manifest.
+- **Phase B (file search):** Searches with `type=file` to find files by name — including all 17 QDA extension patterns (e.g. `*.qdpx`, `*.nvp`, `*.atlproj`). This catches datasets that contain QDA files but don't mention QDA terms in their metadata. Parent datasets discovered this way are fetched and registered automatically.
+
+For harvested datasets (indexed on Harvard but hosted elsewhere, e.g. Borealis, DANS, e-cienciaDatos), the detail API returns 401. In those cases, a fallback extracts file information from the search index itself.
 
 **Columbia Oral History:** Uses the DLC Blacklight JSON API (`/catalog.json`), which was discovered empirically. Columbia's web interfaces are behind Anubis bot protection, but appending `.json` to catalog URLs returns structured data that works fine with `requests`. The harvester filters by `f[lib_repo_short_ssim][]=Oral History Center` and runs a two-phase approach: a broad sweep of the collection plus targeted keyword queries.
 
@@ -107,7 +111,7 @@ Exports the database to CSV files, separated by repository. Each repo gets its o
 
 - **BaseHarvester** — Abstract base class. Manages an HTTP session with a custom User-Agent, rate limiting between requests, and retry logic with exponential backoff (handles 429 Too Many Requests with Retry-After). Also has `classify_file()` which categorizes files as `analysis` (QDA extensions), `primary` (common data formats), or `additional` based on their extension.
 
-- **DataverseHarvester** — Implements harvesting for any Dataverse installation. Two-step process: search for datasets, then fetch detailed metadata including file lists. Updates QDA file counts per project after registering files.
+- **DataverseHarvester** — Implements harvesting for any Dataverse installation. Two-phase search: dataset-level search for metadata matches + file-level search for QDA file patterns. Includes a fallback for harvested datasets whose detail API returns 401. Updates QDA file counts per project after registering files.
 
 - **ColumbiaHarvester** — Custom harvester for Columbia's Digital Library Collections platform. Parses Fedora repository metadata, registers child resources (audio, video, text) as files with guessed extensions based on format type. Marks downloads as skipped since DLC doesn't provide direct file access.
 
@@ -211,13 +215,24 @@ Results from the most recent harvest run:
 
 | Repository | Projects | Files | With DOI | With Description | With License | QDA Files |
 |-----------|----------|-------|----------|-----------------|-------------|-----------|
-| Harvard Dataverse | 151 | 3,625 | 151 | 150 | 143 | 0 |
+| Harvard Dataverse | 632 | 15,213 | 632 | 631 | 515 | 36 |
 | Columbia Oral History | 626 | 1,392 | 626 | 444 | 107 | 0 |
-| **Total** | **777** | **5,017** | **777** | **594** | **250** | **0** |
+| **Total** | **1,258** | **16,605** | **1,258** | **1,075** | **622** | **36** |
 
-Neither repository contains QDA software project files (`.qdpx`, `.nvp`, `.mx24`, etc.). Harvard Dataverse hosts mostly tabular and statistical data — qualitative content shows up as PDFs, CSVs, and Word documents (interview transcripts, codebooks, focus group guides). Columbia's Oral History Archive contains primarily audio and video recordings of oral history interviews.
+### QDA Files Found
 
-This is expected. QDA project files are rarely shared on general-purpose repositories, which is part of why QDArchive needs to exist.
+The pipeline discovered **36 QDA analysis files** across **27 projects** on Harvard Dataverse:
+
+| Format | Count | Software |
+|--------|-------|----------|
+| `.qdpx` | 27 | REFI-QDA standard (interoperable) |
+| `.nvp` | 5 | NVivo (older format) |
+| `.nvpx` | 3 | NVivo (newer format) |
+| `.atlproj` | 1 | ATLAS.ti |
+
+These files were discovered through the file-level search (`type=file`) which searches by filename and file description — catching datasets that contain QDA files even when their metadata text doesn't mention QDA terms. Most of the hosting datasets are from external Dataverse installations (DANS, Borealis, QDR, e-cienciaDatos) that are indexed in Harvard's federated search.
+
+Columbia's Oral History Archive contains qualitative *primary data* (audio/video recordings of oral history interviews) but no QDA analysis project files.
 
 ---
 
@@ -244,7 +259,7 @@ The database and downloaded files are gitignored. CSV exports under `exports/` c
 
 - **Columbia downloads not available** — The DLC platform doesn't expose direct download URLs in its public API. Content is streaming-only or requires institutional access. The harvester catalogs everything it finds but can't download the actual files.
 
-- **No QDA files found (yet)** — Neither Harvard Dataverse nor Columbia Oral History turned up any QDA project files. Both repositories contain qualitative *primary data* (transcripts, recordings) rather than QDA *analysis files*. This is a valid finding as it confirms the gap that QDArchive is meant to fill.
+- **QDA files are rare** — Out of 1,258 projects and 16,605 files, only 36 QDA analysis files were found (27 `.qdpx`, 5 `.nvp`, 3 `.nvpx`, 1 `.atlproj`). All from Harvard Dataverse; Columbia Oral History has none. This confirms the hypothesis that QDA project files are rarely shared, which is the gap QDArchive is meant to fill.
 
 - **Some Harvard datasets return 401** — A few datasets on Harvard Dataverse are `*_harvested` entries (from Borealis, e-cienciaDatos, etc.) that return HTTP 401 when fetching file details. These are logged as technical challenges but don't block the pipeline.
 
