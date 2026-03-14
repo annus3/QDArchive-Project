@@ -68,7 +68,8 @@ class BaseHarvester(ABC):
         self._rate_limit_wait()
         for attempt in range(1, config.MAX_RETRIES + 1):
             try:
-                resp = self.session.get(url, params=params, timeout=30, **kwargs)
+                resp = self.session.get(url, params=params,
+                                        timeout=config.DOWNLOAD_TIMEOUT_SECONDS, **kwargs)
                 self._last_request_time = time.time()
                 if resp.status_code == 429:
                     wait = int(resp.headers.get("Retry-After", 60))
