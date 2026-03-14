@@ -200,6 +200,17 @@ class Database:
     # Files
     # ------------------------------------------------------------------
     def insert_file(self, **kwargs) -> int:
+        # Skip if this file already exists for the project (idempotent re-harvest)
+        pid = kwargs.get("project_id")
+        fname = kwargs.get("filename")
+        if pid and fname:
+            existing = self.conn.execute(
+                "SELECT id FROM files WHERE project_id=? AND filename=?",
+                (pid, fname),
+            ).fetchone()
+            if existing:
+                return existing["id"]
+
         kwargs.setdefault("created_at", _now_iso())
         cols = list(kwargs.keys())
         placeholders = ", ".join(f":{c}" for c in cols)
