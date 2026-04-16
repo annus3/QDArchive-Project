@@ -43,6 +43,10 @@ def main():
         help="Only download projects that contain QDA (analysis) files",
     )
     parser.add_argument(
+        "--fresh", action="store_true",
+        help="Clear any saved progress and start harvest from scratch",
+    )
+    parser.add_argument(
         "--log-level", default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Logging verbosity (default: INFO)",
@@ -60,9 +64,10 @@ def main():
         queries=args.queries,
         download=not args.harvest_only,
         only_qda=args.qda_only,
+        fresh=args.fresh,
     )
 
-    print("\n✅ Pipeline complete!")
+    print("\n  Pipeline complete!")
     print(f"   Projects discovered : {summary['total_projects']}")
     print(f"   With QDA files      : {summary['projects_with_qda']}")
     print(f"   QDA files (total)   : {summary['total_qda_files']}")
