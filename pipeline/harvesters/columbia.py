@@ -31,12 +31,11 @@ class ColumbiaHarvester(BaseHarvester):
     FACET_VALUE = "Oral History Center"
     SEARCH_FIELD = "all_text_teim"
 
-    def __init__(self, db: Database, repo_key: str = "columbia_oral_history"):
-        super().__init__(repo_key, db)
+    def __init__(self, db: Database, repo_key: str = "columbia_oral_history", progress=None):
+        super().__init__(repo_key, db, progress=progress)
 
-    # ------------------------------------------------------------------
+
     # Harvest
-    # ------------------------------------------------------------------
     def harvest(self, queries: list[str] | None = None):
         """
         Harvest items from the Columbia Oral History Center.
@@ -47,28 +46,56 @@ class ColumbiaHarvester(BaseHarvester):
         """
         seen_ids: set[str] = set()
 
+        # On resume, pre-populate seen_ids from DB
+        if self.progress:
+            rows = self.db.conn.execute(
+                "SELECT source_id FROM projects WHERE source_repository=?",
+                (self.repo_key,),
+            ).fetchall()
+            seen_ids = {r["source_id"] for r in rows}
+            if seen_ids:
+                logger.info("[%s] Resuming — %d projects already in DB", self.name, len(seen_ids))
+
         # Phase A: Broad collection sweep (all items under OHC)
-        logger.info("[%s] Broad sweep of Oral History Center collection …", self.name)
-        self._paginate_search(params={}, seen_ids=seen_ids,
-                              max_results=config.MAX_RESULTS_PER_QUERY)
+        if self.progress and self.progress.is_query_complete(self.repo_key, "broad_sweep", "_broad_sweep"):
+            logger.info("[%s] Skipping completed broad sweep", self.name)
+        else:
+            logger.info("[%s] Broad sweep of Oral History Center collection …", self.name)
+            self._paginate_search(params={}, seen_ids=seen_ids,
+                                  max_results=config.MAX_RESULTS_PER_QUERY,
+                                  query="_broad_sweep")
+            self.db.flush()
+            if self.progress:
+                self.progress.mark_query_complete(self.repo_key, "broad_sweep", "_broad_sweep")
 
         # Phase B: Keyword queries for qualitative-research-relevant items
         queries = queries or config.SEARCH_QUERIES
         for query in queries:
+            if self.progress and self.progress.is_query_complete(self.repo_key, "keyword_search", query):
+                logger.info("[%s] Skipping completed keyword search: %s", self.name, query)
+                continue
             logger.info("[%s] Keyword search: %s", self.name, query)
             self._paginate_search(
                 params={"q": query, "search_field": self.SEARCH_FIELD},
                 seen_ids=seen_ids,
                 max_results=config.MAX_RESULTS_PER_QUERY,
+                query=query,
             )
+            self.db.flush()
+            if self.progress:
+                self.progress.mark_query_complete(self.repo_key, "keyword_search", query)
 
+        self.db.flush()
         logger.info("[%s] Harvest complete. %d unique items cataloged.",
                      self.name, len(seen_ids))
 
     def _paginate_search(self, params: dict, seen_ids: set[str],
-                         max_results: int):
+                         max_results: int, query: str = ""):
         """Paginate through the DLC catalog JSON endpoint."""
+        phase = "broad_sweep" if query == "_broad_sweep" else "keyword_search"
         page = 1
+        if self.progress:
+            page = max(1, self.progress.get_offset(self.repo_key, phase, query))
         per_page = 100
 
         base_params = {
@@ -104,7 +131,7 @@ class ColumbiaHarvester(BaseHarvester):
                 if not item_id or item_id in seen_ids:
                     continue
                 seen_ids.add(item_id)
-                self._process_list_item(item)
+                self._process_list_item(item, query)
 
             logger.info("[%s] Page %d — %d items (total available: %d, collected: %d)",
                         self.name, page, len(items), total, len(seen_ids))
@@ -116,11 +143,12 @@ class ColumbiaHarvester(BaseHarvester):
                 break
 
             page += 1
+            if self.progress:
+                self.progress.save_offset(self.repo_key, phase, query, page)
 
-    # ------------------------------------------------------------------
+
     # Item processing
-    # ------------------------------------------------------------------
-    def _process_list_item(self, item: dict):
+    def _process_list_item(self, item: dict, query: str = ""):
         """Process a single item from the DLC list API response."""
         item_id = item["id"]
         attrs = item.get("attributes", {})
@@ -149,6 +177,8 @@ class ColumbiaHarvester(BaseHarvester):
         if not source_url:
             source_url = f"{self.base_url}/catalog/{item_id}"
 
+        repo_cfg = config.REPOSITORIES[self.repo_key]
+
         # Store basic metadata (detail fetch will enrich)
         project_id = self.db.upsert_project(
             source_repository=self.repo_key,
@@ -165,12 +195,24 @@ class ColumbiaHarvester(BaseHarvester):
             project_scope=str(collection) if collection else "Oral History",
             has_qda_files=0,
             metadata_json={"list_item": item},
+            download_method="API-CALL",
+            matched_queries=[query] if query else [],
+            # Required schema fields
+            repository_id=repo_cfg["repository_id"],
+            repository_url=self.base_url,
+            download_repository_folder=self.repo_key,
+            download_project_folder=item_id,
         )
 
-        # Fetch detailed metadata
-        self._fetch_detail(project_id, item_id)
+        # Populate normalized tables
+        for a in authors:
+            if isinstance(a, str):
+                self.db.insert_person_role(project_id, a, "AUTHOR")
 
-    def _fetch_detail(self, project_id: int, item_id: str):
+        # Fetch detailed metadata
+        self._fetch_detail(project_id, item_id, query)
+
+    def _fetch_detail(self, project_id: int, item_id: str, query: str = ""):
         """Fetch full item metadata from the detail endpoint."""
         try:
             resp = self.get(f"{self.base_url}/catalog/{item_id}.json")
@@ -241,6 +283,12 @@ class ColumbiaHarvester(BaseHarvester):
             except (json.JSONDecodeError, TypeError):
                 pass
 
+            repo_cfg = config.REPOSITORIES[self.repo_key]
+
+            # Extract language if available
+            language_vals = doc.get("language_language_term_text_ssim", [])
+            language = language_vals[0] if language_vals else ""
+
             # Update project with enriched data
             self.db.upsert_project(
                 source_repository=self.repo_key,
@@ -257,7 +305,25 @@ class ColumbiaHarvester(BaseHarvester):
                 project_scope=collection if collection else "Oral History",
                 has_qda_files=0,
                 metadata_json=doc,
+                download_method="API-CALL",
+                matched_queries=[query] if query else [],
+                # Required schema fields
+                repository_id=repo_cfg["repository_id"],
+                repository_url=self.base_url,
+                language=language,
+                download_repository_folder=self.repo_key,
+                download_project_folder=item_id,
             )
+
+            # Populate normalized tables
+            for a in authors:
+                if isinstance(a, str):
+                    self.db.insert_person_role(project_id, a, "AUTHOR")
+            for subj in subjects:
+                if isinstance(subj, str):
+                    self.db.insert_keyword(project_id, subj)
+            if license_info:
+                self.db.insert_license(project_id, license_info)
 
             # Register child resources as files (skip if already registered)
             existing_files = self.db.get_files_for_project(project_id)
@@ -335,14 +401,16 @@ class ColumbiaHarvester(BaseHarvester):
                 checksum="",
             )
 
-    # ------------------------------------------------------------------
+    
     # Download
-    # ------------------------------------------------------------------
-    def download_project_files(self, project_id: int):
+    def download_project_files(self, project_id: int,
+                               category: str | None = None,
+                               budget=None):
         """
-        Columbia DLC does not expose direct download URLs for content
-        datastreams in the public API — media access requires authentication
-        or is streaming-only. We mark files as 'skipped' and log the challenge.
+        Columbia DLC does not expose direct download URLs for media.
+        Instead we download the full JSON metadata for each project as a
+        permanent record of its contents — this ensures Columbia is
+        represented in the data/ folder alongside Harvard.
         """
         project = self.db.conn.execute(
             "SELECT * FROM projects WHERE id=?", (project_id,)
@@ -350,18 +418,37 @@ class ColumbiaHarvester(BaseHarvester):
         if not project:
             return
 
+        dest_dir = os.path.join(
+            config.DATA_DIR, self.repo_key,
+            project["source_id"].replace(":", "_").replace("/", "_"),
+        )
+        os.makedirs(dest_dir, exist_ok=True)
+
+        # Download the full JSON metadata for this item
+        item_id = project["source_id"]
+        metadata_path = os.path.join(dest_dir, "metadata.json")
+        if not os.path.exists(metadata_path):
+            try:
+                resp = self.get(f"{self.base_url}/catalog/{item_id}.json")
+                if resp.status_code == 200:
+                    with open(metadata_path, "w", encoding="utf-8") as fh:
+                        json.dump(resp.json(), fh, indent=2, ensure_ascii=False)
+                    actual_size = os.path.getsize(metadata_path)
+                    if budget:
+                        budget.record(actual_size)
+                    logger.info("[%s] Saved metadata: %s (%d bytes)",
+                                self.name, item_id, actual_size)
+                else:
+                    logger.debug("[%s] Metadata fetch returned %d for %s",
+                                 self.name, resp.status_code, item_id)
+            except Exception as exc:
+                logger.warning("[%s] Failed to save metadata for %s: %s",
+                               self.name, item_id, exc)
+
+        # Mark all files as skipped (media is auth-gated)
         files = self.db.get_files_for_project(project_id)
         for f in files:
-            if f["download_status"] == "downloaded":
-                continue
-            # DLC content is not directly downloadable via public API
-            self.db.update_file_status(f["id"], "skipped")
+            if f["download_status"] not in ("downloaded", "skipped"):
+                self.db.update_file_status(f["id"], "skipped")
 
-        self.db.update_project_status(project_id, "skipped")
-        self.db.log_challenge(
-            "access_denied",
-            f"Columbia DLC does not expose direct download URLs. "
-            f"Access via DOI: {project['doi'] or 'N/A'}",
-            project_id=project_id,
-            source_repository=self.repo_key,
-        )
+        self.db.update_project_status(project_id, "downloaded")
