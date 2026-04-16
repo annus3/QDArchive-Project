@@ -39,11 +39,9 @@ QDA_EXTENSIONS = {
     ".mx3",          # MAXQDA 2007
     ".mx2",          # MAXQDA 2
     ".m2k",          # MAXQDA 1
-    ".mex",          # MAXQDA exchange (generic)
     ".mtr",          # MAXQDA exported code system (legacy)
     ".loa",          # MAXQDA log analysis
     ".sea",          # MAXQDA survey analysis
-    ".mod",          # MAXQDA module
 
     # NVivo  (https://lumivero.com/products/nvivo/)
     ".nvp",          # NVivo (older)
@@ -82,8 +80,8 @@ QDA_EXTENSIONS = {
 MAXQDA_EXTENSIONS = {
     ext for ext in QDA_EXTENSIONS
     if ext.startswith((".mqda", ".mqb", ".mqt", ".mqe", ".mqm",
-                       ".mx", ".mc2", ".mex", ".m2k", ".mtr",
-                       ".loa", ".sea", ".mod"))
+                       ".mx", ".mc2", ".mex2", ".m2k", ".mtr",
+                       ".loa", ".sea"))
 }
 
 # Common primary data extensions (for classification)
@@ -98,6 +96,18 @@ PRIMARY_DATA_EXTENSIONS = {
 
 
 # 3-tier search query system
+#
+# NOTE ON SIMILAR NAMES ACROSS TIERS:
+# Some terms appear in both Tier 1 and Tier 2 (e.g. "qdpx" in Tier 2
+# and "*.qdpx" in Tier 1).  These are NOT redundant — they hit
+# different Dataverse API endpoints:
+#
+#   Tier 1 (*.qdpx)  →  type=file search  →  matches by FILENAME
+#   Tier 2 ("qdpx")  →  type=dataset search  →  matches by METADATA text
+#
+# A dataset may mention "qdpx" in its description but have no .qdpx file,
+# or it may contain a .qdpx file without ever mentioning the word in its
+# metadata.  Both searches are needed for full coverage.
 
 # Tier 1: QDA file extension patterns (highest precision)
 # These are NOT sent as dataset-search queries — they feed _build_file_queries()
@@ -106,20 +116,23 @@ PRIMARY_DATA_EXTENSIONS = {
 QDA_EXTENSION_QUERIES = [f"*{ext}" for ext in sorted(QDA_EXTENSIONS)]
 
 # Tier 2: CAQDAS software tool names (high precision)
+# These search dataset METADATA for tool names.  Even when a name
+# overlaps with a Tier 1 extension (e.g. "qdpx"), the search target
+# is different (metadata text vs. filename).
 TIER2_TOOL_QUERIES = [
-    "qdpx",                          # 11 QDA files found
-    "REFI-QDA",                      # 3 QDA files found
-    "MAXQDA",                        # 10 QDA files found (.mx22, .mx24, .mx20)
-    "NVivo",                         # 23 QDA files found (.nvp, .nvpx)
-    "ATLAS.ti",                      # 3 QDA files found (.atlproj, .qdpx)
-    "QDA Miner",                     # 3 QDA files found (.qdpx)
-    "QDAcity",                       # Niche — QDAcity cloud tool
-    "f4analyse",                     # Niche — f4analyse transcription/coding tool
-    "Dedoose",                       # Cloud-based QDA tool (relevant datasets)
-    "Quirkos",                       # Quirkos QDA tool
-    "HyperRESEARCH",                 # HyperRESEARCH QDA tool
-    "Kwalitan",                      # Kwalitan QDA tool
-    "CAQDAS",                        # General CAQDAS term
+    "qdpx",                          # 11 QDA files found  (also *.qdpx in Tier 1 — Tier 1 matches filenames, this matches metadata)
+    "REFI-QDA",                      # 3 QDA files found   (the standard's name — catches metadata that says "REFI-QDA" but files may not be .qdpx)
+    "MAXQDA",                        # 10 QDA files found   (also *.mx* in Tier 1 — this finds datasets mentioning the tool by name)
+    "NVivo",                         # 23 QDA files found   (also *.nvp/*.nvpx in Tier 1)
+    "ATLAS.ti",                      # 3 QDA files found    (also *.atlproj etc. in Tier 1)
+    "QDA Miner",                     # 3 QDA files found    (also *.qda/*.ppj in Tier 1)
+    "QDAcity",                       # Niche — QDAcity cloud tool  (also *.qdc in Tier 1)
+    "f4analyse",                     # Niche — f4analyse tool  (also *.f4p in Tier 1)
+    "Dedoose",                       # Cloud-based QDA tool (no local file format — Tier 2 only)
+    "Quirkos",                       # Quirkos QDA tool  (also *.qpd/*.qde in Tier 1)
+    "HyperRESEARCH",                 # HyperRESEARCH QDA tool  (also *.hnsp in Tier 1)
+    "Kwalitan",                      # Kwalitan QDA tool  (also *.kdp in Tier 1)
+    "CAQDAS",                        # General CAQDAS term (no matching extension — Tier 2 only)
 ]
 
 # Tier 3: Methodology keywords (broader recall)
@@ -143,7 +156,6 @@ SEARCH_QUERIES = TIER2_TOOL_QUERIES + TIER3_METHODOLOGY_QUERIES
 
 
 # Repository configurations
-
 REPOSITORIES = {
     # Harvard Dataverse 
     "harvard_dataverse": {
