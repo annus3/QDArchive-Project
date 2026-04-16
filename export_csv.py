@@ -29,12 +29,18 @@ def _export_for_repo(db: Database, repo_key: str, base_dir: str):
     p = db.export_projects_csv(os.path.join(repo_dir, "projects.csv"), source_repository=repo_key)
     f = db.export_files_csv(os.path.join(repo_dir, "files.csv"), source_repository=repo_key)
     c = db.export_challenges_csv(os.path.join(repo_dir, "technical_challenges.csv"), source_repository=repo_key)
+    k = db.export_keywords_csv(os.path.join(repo_dir, "keywords.csv"), source_repository=repo_key)
+    pr = db.export_person_role_csv(os.path.join(repo_dir, "person_role.csv"), source_repository=repo_key)
+    li = db.export_licenses_csv(os.path.join(repo_dir, "licenses.csv"), source_repository=repo_key)
 
     summary = db.summary(source_repository=repo_key)
     print(f"\n  [{repo_key}]")
     print(f"    projects.csv             → {p}")
     print(f"    files.csv                → {f}")
     print(f"    technical_challenges.csv → {c}")
+    print(f"    keywords.csv             → {k}")
+    print(f"    person_role.csv          → {pr}")
+    print(f"    licenses.csv             → {li}")
     print(f"    {summary['total_projects']} projects, {summary['total_files']} files, "
           f"{summary['projects_with_qda']} with QDA")
     print(f"    QDA files: {summary['total_qda_files']} total "
@@ -49,12 +55,18 @@ def _export_combined(db: Database, base_dir: str):
     p = db.export_projects_csv(os.path.join(combined_dir, "projects.csv"))
     f = db.export_files_csv(os.path.join(combined_dir, "files.csv"))
     c = db.export_challenges_csv(os.path.join(combined_dir, "technical_challenges.csv"))
+    k = db.export_keywords_csv(os.path.join(combined_dir, "keywords.csv"))
+    pr = db.export_person_role_csv(os.path.join(combined_dir, "person_role.csv"))
+    li = db.export_licenses_csv(os.path.join(combined_dir, "licenses.csv"))
 
     summary = db.summary()
     print(f"\n  [combined]")
     print(f"    projects.csv             → {p}")
     print(f"    files.csv                → {f}")
     print(f"    technical_challenges.csv → {c}")
+    print(f"    keywords.csv             → {k}")
+    print(f"    person_role.csv          → {pr}")
+    print(f"    licenses.csv             → {li}")
     print(f"    {summary['total_projects']} projects, {summary['total_files']} files, "
           f"{summary['projects_with_qda']} with QDA")
     print(f"    QDA files: {summary['total_qda_files']} total "
