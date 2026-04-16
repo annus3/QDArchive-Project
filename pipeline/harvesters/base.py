@@ -2,15 +2,22 @@
 Abstract base class for all repository harvesters.
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import time
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
 import requests
 
+if TYPE_CHECKING:
+    from ..orchestrator import DownloadBudget
+
 from .. import config
 from ..database import Database
+
 
 logger = logging.getLogger(__name__)
 
@@ -33,10 +40,11 @@ class BaseHarvester(ABC):
     - Database handle
     """
 
-    def __init__(self, repo_key: str, db: Database):
+    def __init__(self, repo_key: str, db: Database, progress=None):
         self.repo_key = repo_key
         self.repo_cfg = config.REPOSITORIES[repo_key]
         self.db = db
+        self.progress = progress
         self.session = requests.Session()
         self.session.headers.update({
             "User-Agent": "QDArchive-Seeding-Pipeline/1.0 (research project)",
@@ -56,9 +64,8 @@ class BaseHarvester(ABC):
     def rate_limit(self) -> float:
         return self.repo_cfg.get("rate_limit_seconds", 1.0)
 
-    # ------------------------------------------------------------------
+    
     # HTTP helpers with rate-limiting
-    # ------------------------------------------------------------------
     def _rate_limit_wait(self):
         elapsed = time.time() - self._last_request_time
         if elapsed < self.rate_limit:
@@ -87,13 +94,23 @@ class BaseHarvester(ABC):
                 time.sleep(2 ** attempt)
         raise RuntimeError("Unreachable")
 
-    # ------------------------------------------------------------------
+    
     # Interface each harvester must implement
-    # ------------------------------------------------------------------
+    
     @abstractmethod
     def harvest(self, queries: list[str] | None = None):
         """Search the repository for qualitative data projects and store metadata + file info in the DB."""
 
     @abstractmethod
-    def download_project_files(self, project_id: int):
-        """Download all files for a given project from the repository."""
+    def download_project_files(self, project_id: int,
+                               category: str | None = None,
+                               budget: "DownloadBudget | None" = None):
+        """Download files for a given project from the repository.
+
+        Args:
+            project_id: The project to download files for.
+            category: If set, only download files matching this file_category
+                      (e.g. ``"analysis"`` for QDA-only pass, ``None`` for all).
+            budget: Optional shared budget tracker — stops downloading when
+                    the global byte limit is reached.
+        """
