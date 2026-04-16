@@ -28,49 +28,40 @@ That is what this pipeline does it systematically : searches repositories, colle
 ```
 QDArchive-Project/
 ├── pipeline/
+│   ├── harvesters/
+│   │   ├── __init__.py
+│   │   ├── base.py             # Abstract base class — HTTP session, rate limiting, retries
+│   │   ├── columbia.py         # Columbia DLC harvester (Blacklight JSON API)
+│   │   └── dataverse.py        # Harvard Dataverse harvester (Dataverse Search API)
 │   ├── __init__.py
 │   ├── config.py               # Configuration — repos, queries, extensions, limits
 │   ├── database.py             # SQLite schema, CRUD, QDA counts, CSV export
-│   ├── progress.py             # Harvest progress/resume state tracker
 │   ├── orchestrator.py         # Coordinates harvesters and pipeline phases
-│   └── harvesters/
-│       ├── __init__.py
-│       ├── base.py             # Abstract base class — HTTP session, rate limiting, retries
-│       ├── dataverse.py        # Harvard Dataverse harvester (Dataverse Search API)
-│       └── columbia.py         # Columbia DLC harvester (Blacklight JSON API)
-├── run_pipeline.py             # CLI entry point — run the full pipeline
-├── export_csv.py               # CLI — export database to per-repo and combined CSVs
-├── requirements.txt            # Python dependencies (just requests)
-├── .gitignore
-├── 23221189-sq26.db            # SQLite database (generated)
-├── data/                       # Downloaded files (gitignored)
+│   └── progress.py             # Harvest progress/resume state tracker
+├── data/                         # Downloaded files (gitignored)
 │   ├── harvard_dataverse/
-│   │   └── doi_10.7910_DVN_xxx/  # QDA + primary + additional files
+│   │   └── doi_10.xxxx_xxx/      # QDA + primary + additional files
 │   └── columbia_oral_history/
 │       └── cul_xxx/
 │           └── metadata.json     # Full API metadata (media is auth-gated)
-└── exports/                      # CSV exports 
-    ├── harvard_dataverse/
-    │   ├── projects.csv
-    │   ├── files.csv
-    │   ├── keywords.csv
-    │   ├── person_role.csv
-    │   ├── licenses.csv
-    │   └── technical_challenges.csv
-    ├── columbia_oral_history/
-    │   ├── projects.csv
-    │   ├── files.csv
-    │   ├── keywords.csv
-    │   ├── person_role.csv
-    │   ├── licenses.csv
-    │   └── technical_challenges.csv
-    └── combined/
-        ├── projects.csv
-        ├── files.csv
-        ├── keywords.csv
-        ├── person_role.csv
-        ├── licenses.csv
-        └── technical_challenges.csv
+├── exports/                      # CSV exports (gitignored)
+│   ├── harvard_dataverse/
+│   │   ├── projects.csv
+│   │   ├── files.csv
+│   │   └── ...
+│   ├── columbia_oral_history/
+│   │   ├── projects.csv
+│   │   ├── files.csv
+│   │   └── ...
+│   └── combined/
+│       └── ...
+├── .gitignore
+├── 23221189-sq26.db            # SQLite database (generated)
+├── LICENSE
+├── README.md
+├── export_csv.py               # CLI — export database to per-repo and combined CSVs
+├── requirements.txt            # Python dependencies (just requests)
+└── run_pipeline.py             # CLI entry point — run the full pipeline
 ```
 
 ---
@@ -85,7 +76,7 @@ Searches each repository using 25 configured search queries (13 CAQDAS tool name
 
 **Harvard Dataverse:** Uses the standard Dataverse Search API (`/api/search`) in two phases:
 - **Phase A (dataset search):** Searches with `type=dataset` to find datasets whose metadata matches the queries. For each result, a detail request to `/api/datasets/:persistentId/` fetches the file manifest.
-- **Phase B (file search):** Searches with `type=file` to find files by name — including all 41 QDA extension patterns (e.g. `*.qdpx`, `*.nvp`, `*.atlproj`). This catches datasets that contain QDA files but don't mention QDA terms in their metadata. Parent datasets discovered this way are fetched and registered automatically.
+- **Phase B (file search):** Searches with `type=file` to find files by name — including all 42 QDA extension patterns (e.g. `*.qdpx`, `*.nvp`, `*.atlproj`). This catches datasets that contain QDA files but don't mention QDA terms in their metadata. Parent datasets discovered this way are fetched and registered automatically.
 
 For harvested datasets (indexed on Harvard but hosted elsewhere, e.g. Borealis, DANS, e-cienciaDatos), the detail API returns 401. In those cases, a fallback extracts file information from the search index itself.
 
@@ -208,7 +199,7 @@ All settings live in `pipeline/config.py`:
 | `MAX_TOTAL_DOWNLOAD_GB` | 6 | Global download budget in GB; 0 = unlimited |
 | `DOWNLOAD_TIMEOUT_SECONDS` | 600 | Per-file download timeout (10 minutes) |
 | `MAX_RETRIES` | 3 | Retry attempts for failed HTTP requests |
-| `QDA_EXTENSIONS` | 41 types | File extensions recognized as QDA analysis files |
+| `QDA_EXTENSIONS` | 42 types | File extensions recognized as QDA analysis files |
 | `PRIMARY_DATA_EXTENSIONS` | ~30 types | Extensions classified as primary research data |
 | `REPOSITORIES` | 2 repos | Repository definitions (URL, type, rate limit) |
 | `BATCH_COMMIT_SIZE` | 50 | Commit to DB every N operations (batch writes) |
@@ -216,13 +207,13 @@ All settings live in `pipeline/config.py`:
 
 The 25 search queries are organized into a **3-tier system** defined in `pipeline/config.py`:
 
-- **Tier 1** (41 extension patterns): Handled by file-level search in the Dataverse harvester (`*.qdpx`, `*.nvp`, etc.)
+- **Tier 1** (42 extension patterns): Handled by file-level search in the Dataverse harvester (`*.qdpx`, `*.nvp`, etc.)
 - **Tier 2** (13 tool queries): `qdpx`, `REFI-QDA`, `MAXQDA`, `NVivo`, `ATLAS.ti`, `QDA Miner`, `QDAcity`, `f4analyse`, `Dedoose`, `Quirkos`, `HyperRESEARCH`, `Kwalitan`, `CAQDAS`
 - **Tier 3** (12 methodology queries): `"qualitative data analysis"`, `"thematic analysis"`, `"grounded theory"`, `"qualitative coding"`, and more
 
-QDA extensions are recognized from 9 tools (41 extensions total):
+QDA extensions are recognized from 9 tools (42 extensions total):
 - **REFI-QDA:** `.qdpx`
-- **MAXQDA:** `.mqda`, `.mqbac`, `.mqtc`, `.mqex`, `.mqmtr`, `.mx24`, `.mx24bac`, `.mc24`, `.mex24`, `.mx22`, `.mex22`, `.mx20`, `.mx18`, `.mx12`, `.mx11`, `.mx5`, `.mx4`, `.mx3`, `.mx2`, `.m2k`, `.mex`, `.mtr`
+- **MAXQDA:** `.mqda`, `.mqbac`, `.mqtc`, `.mqex`, `.mqmtr`, `.mx24`, `.mx24bac`, `.mc24`, `.mex24`, `.mx22`, `.mex22`, `.mx20`, `.mx18`, `.mx12`, `.mx11`, `.mx5`, `.mx4`, `.mx3`, `.mx2`, `.m2k`, `.mtr`, `.loa`, `.sea`
 - **NVivo:** `.nvp`, `.nvpx`
 - **ATLAS.ti:** `.atlasproj`, `.atlproj`, `.hpr`, `.hpr7`, `.hermeneutic`
 - **QDAcity:** `.qdc`
@@ -230,6 +221,8 @@ QDA extensions are recognized from 9 tools (41 extensions total):
 - **f4analyse:** `.f4p`
 - **Quirkos:** `.qpd`, `.qde`
 - **Other:** `.cat` (Coding Analysis Toolkit), `.hnsp` (HyperRESEARCH), `.kdp` (Kwalitan)
+
+> **Note:** Generic `.mex` and `.mod` extensions were removed after investigation — `.mex` files on Dataverse are overwhelmingly MATLAB MEX compiled binaries, and `.mod` files are Dynare/GAMS economic model scripts. The version-specific `.mex22` and `.mex24` MAXQDA Exchange formats are retained.
 
 ---
 
@@ -257,29 +250,30 @@ Results from the most recent harvest run:
 
 | Repository | Projects | Files | QDA Files |
 |-----------|----------|-------|-----------|
-| Harvard Dataverse | 1,873 | 54,301 | 209 |
+| Harvard Dataverse | 1,958 | 60,495 | 173 |
 | Columbia Oral History | 327 | 737 | 0 |
-| **Total** | **2,200** | **55,038** | **209** |
+| **Total** | **2,285** | **61,232** | **173** |
 
 ### QDA Files Found
 
-The pipeline discovered **209 QDA analysis files** across **105 projects** on Harvard Dataverse:
+The pipeline discovered **173 QDA analysis files** across **117 projects** on Harvard Dataverse:
 
 | Format | Count | Software |
 |--------|-------|----------|
-| `.mex` | 52 | MAXQDA exchange files |
+| `.nvp` | 30 | NVivo (older format) |
+| `.qdpx` | 27 | REFI-QDA standard (interoperable) |
 | `.nvpx` | 27 | NVivo (newer format) |
-| `.nvp` | 27 | NVivo (older format) |
-| `.qdpx` | 25 | REFI-QDA standard (interoperable) |
-| `.mtr` | 16 | MAXQDA exported code system |
+| `.mtr` | 17 | MAXQDA exported code system |
+| `.mx22` | 13 | MAXQDA 2022 |
 | `.mx20` | 13 | MAXQDA 2020 |
-| `.mx22` | 12 | MAXQDA 2022 |
+| `.atlproj` | 10 | ATLAS.ti |
 | `.mx5` | 9 | MAXQDA 11 (Windows) |
-| `.atlproj` | 8 | ATLAS.ti |
+| `.hpr7` | 7 | ATLAS.ti 7 |
+| `.cat` | 6 | Coding Analysis Toolkit |
 | `.qdc` | 5 | QDAcity |
-| Other | 15 | `.hpr7`, `.ppj`, `.mx24`, `.mx12`, `.cat`, `.mx3` |
+| Other | 9 | `.mx24`, `.ppj`, `.mx12`, `.mx3` |
 
-These files were discovered through a combination of dataset-level search (25 queries across 3 tiers) and file-level search (41 QDA extension patterns), which catches datasets containing QDA files even when their metadata doesn't mention QDA terms. 227 projects were discovered by multiple queries, demonstrating the value of the expanded query system.
+These files were discovered through a combination of dataset-level search (25 queries across 3 tiers) and file-level search (42 QDA extension patterns), which catches datasets containing QDA files even when their metadata doesn't mention QDA terms. Many projects were discovered by multiple queries, demonstrating the value of the expanded query system.
 
 Columbia's Oral History Archive contains qualitative *primary data* (audio/video recordings of oral history interviews) but no QDA analysis project files.
 
@@ -308,7 +302,7 @@ The database and downloaded files are gitignored. CSV exports under `exports/` c
 
 - **Columbia is a primary data archive, not a QDA repository** — The Columbia Oral History Archive contains oral history recordings and transcripts (qualitative primary data), not QDA analysis project files. The DLC platform doesn't expose direct download URLs — content is streaming-only or requires institutional access. The harvester saves full JSON metadata per project as a permanent record, but media files are marked as `skipped`. Additionally, 93 Columbia projects use the `http://rightsstatements.org/vocab/InC/1.0/` rights statement ("In Copyright" — not an open license). See the "Why Columbia Oral History Has 0 QDA Files" section above for details.
 
-- **QDA files are rare** — Out of 2,200 projects and 55,038 files, only 209 QDA analysis files were found across 105 projects (52 `.mex`, 27 `.nvpx`, 27 `.nvp`, 25 `.qdpx`, 16 `.mtr`, 13 `.mx20`, 12 `.mx22`, and others). All from Harvard Dataverse; Columbia Oral History has none. This confirms the hypothesis that QDA project files are rarely shared, which is the gap QDArchive is meant to fill.
+- **QDA files are rare** — Out of 2,285 projects and 61,232 files, only 173 QDA analysis files were found across 117 projects (30 `.nvp`, 27 `.qdpx`, 27 `.nvpx`, 17 `.mtr`, 13 `.mx22`, 13 `.mx20`, 10 `.atlproj`, and others). All from Harvard Dataverse; Columbia Oral History has none. This confirms the hypothesis that QDA project files are rarely shared, which is the gap QDArchive is meant to fill.
 
 - **Some Harvard datasets return 401** — A few datasets on Harvard Dataverse are `*_harvested` entries (from Borealis, e-cienciaDatos, etc.) that return HTTP 401 when fetching file details. These are logged as technical challenges but don't block the pipeline.
 
