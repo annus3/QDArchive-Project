@@ -56,13 +56,16 @@ QDArchive-Project/
 │   └── combined/
 │       └── ...
 ├── .gitignore
-├── 23221189-sq26.db            # SQLite database (generated)
+├── 23221189-sq26-full.db       # additional SQLite database (6 tables incl. technical_challenges + analytics columns)
+├── 23221189-sq26.db            # Submission SQLite database (5 tables, required columns + enums only)
 ├── LICENSE
 ├── README.md
-├── export_csv.py               # CLI — export database to per-repo and combined CSVs
+├── export_csv.py               # CLI — export operational database to per-repo and combined CSVs
 ├── requirements.txt            # Python dependencies (just requests)
 └── run_pipeline.py             # CLI entry point — run the full pipeline
 ```
+
+> **Two-database layout.** The pipeline writes to `23221189-sq26-full.db` (the operational DB, carrying all analytics and the `technical_challenges` log). The stripped, `23221189-sq26.db` is the main db used for evaluation.
 
 ---
 
@@ -226,17 +229,22 @@ QDA extensions are recognized from 9 tools (42 extensions total):
 
 ## Database Schema
 
-Five tables in `23221189-sq26.db` (SQLite):
+The project ships **two SQLite databases**:
 
-**projects** — One row per discovered dataset/collection. Required schema fields: `repository_id`, `repository_url`, `project_url`, `query_string`, `upload_date`, `download_date`, `download_method`, `download_repository_folder`, `download_project_folder`, `language`, `version`, `title`, `description`, `doi`. Unique constraint on `(source_repository, source_id)`.
+- **`23221189-sq26-full.db`** — the *operational* database written to by the pipeline. Six tables (the five below plus `technical_challenges` for harvest-error logging) and extra analytics columns on `projects`/`files` (QDA counts, raw API metadata, download classification, `matched_queries`, etc.).
+- **`23221189-sq26.db`** — the *submission* database. Stripped copy containing only the five required tables with only required columns, and only enum-valid values for `FILES.status`, `PERSON_ROLE.role`, and `LICENSES.license`.
 
-**files** — One row per file within a project. Columns: `project_id` (FK), `file_name`, `file_type` (extension without dot, e.g. "xlsx"), `status`. Status uses the `DOWNLOAD_RESULT` enum: `SUCCEEDED`, `FAILED_TOO_LARGE`, `FAILED_SERVER_UNRESPONSIVE`, `FAILED_LOGIN_REQUIRED`.
+The five required tables (present in both DBs):
+
+**projects** — One row per discovered dataset/collection. Required schema fields: `repository_id`, `repository_url`, `project_url`, `query_string`, `upload_date`, `download_date`, `download_method`, `download_repository_folder`, `download_project_folder`, `language`, `version`, `title`, `description`, `doi`. Operational DB also keeps `source_repository` + `source_id` (unique together for upsert), analytics counts, and raw `metadata_json`.
+
+**files** — One row per file within a project. Required columns: `project_id` (FK), `file_name`, `file_type` (extension without dot, e.g. "xlsx"), `status`. Status uses the `DOWNLOAD_RESULT` enum: `SUCCEEDED`, `FAILED_TOO_LARGE`, `FAILED_SERVER_UNRESPONSIVE`, `FAILED_LOGIN_REQUIRED`. Operational DB also keeps `file_extension`, `file_category`, `file_size_bytes`, `download_url`, `local_path`, `checksum`, `downloaded_at`.
 
 **keywords** — Normalized keyword table. Columns: `project_id` (FK), `keyword`. One row per keyword per project.
 
-**person_role** — Normalized person/role table. Columns: `project_id` (FK), `name`, `role` (`AUTHOR` / `OTHER`).
+**person_role** — Normalized person/role table. Columns: `project_id` (FK), `name`, `role`. Role uses the `PERSON_ROLE` enum: `UPLOADER`, `AUTHOR`, `OWNER`, `OTHER`, `UNKNOWN`. Current harvesters populate `AUTHOR` for listed authors and `OTHER` for Dataverse contacts.
 
-**licenses** — Normalized license table. Columns: `project_id` (FK), `license`.
+**licenses** — Normalized license table. Columns: `project_id` (FK), `license`. Submission DB holds only enum-valid values (`CC0`, `CC BY`, `CC BY-SA`, `CC BY-NC`, `CC BY-ND`, `CC BY-NC-ND`, `ODbL`, `ODC-By`, `PDDL`, `ODbL-1.0`, `ODC-By-1.0`); raw strings like `CC0 1.0` are normalized during the rebuild, and rows that don't map cleanly (e.g. `rightsstatements.org/InC`, `CC BY-NC-SA`) are dropped from the submission copy only — the operational DB retains the raw value.
 
 ---
 
@@ -284,13 +292,17 @@ The pipeline is idempotent. Running it again will:
 
 To reproduce from scratch:
 ```bash
-# Delete the database and re-harvest
+# Delete the operational and main database and re-harvest
+rm 23221189-sq26-full.db
 rm 23221189-sq26.db
 python run_pipeline.py --harvest-only
 python export_csv.py
+# Rebuild the grader-facing submission DB from the operational DB
+# (builder script is kept locally, not in the repo yet)
+python sub_db.py
 ```
 
-The database and downloaded files are gitignored. CSV exports under `exports/` contain the harvested data.
+The downloaded `data/` folder and CSV `exports/` are gitignored; both operational and submission `.db` files are version-controlled so reviewers can inspect the harvested metadata without running the pipeline.
 
 ---
 
