@@ -222,8 +222,6 @@ QDA extensions are recognized from 9 tools (42 extensions total):
 - **Quirkos:** `.qpd`, `.qde`
 - **Other:** `.cat` (Coding Analysis Toolkit), `.hnsp` (HyperRESEARCH), `.kdp` (Kwalitan)
 
-> **Note:** Generic `.mex` and `.mod` extensions were removed after investigation — `.mex` files on Dataverse are overwhelmingly MATLAB MEX compiled binaries, and `.mod` files are Dynare/GAMS economic model scripts. The version-specific `.mex22` and `.mex24` MAXQDA Exchange formats are retained.
-
 ---
 
 ## Database Schema
