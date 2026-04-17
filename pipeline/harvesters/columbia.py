@@ -445,10 +445,10 @@ class ColumbiaHarvester(BaseHarvester):
                 logger.warning("[%s] Failed to save metadata for %s: %s",
                                self.name, item_id, exc)
 
-        # Mark all files as skipped (media is auth-gated)
+        # Mark all files as FAILED_LOGIN_REQUIRED (media is auth-gated)
         files = self.db.get_files_for_project(project_id)
         for f in files:
-            if f["download_status"] not in ("downloaded", "skipped"):
-                self.db.update_file_status(f["id"], "skipped")
+            if f["status"] not in ("SUCCEEDED", "FAILED_LOGIN_REQUIRED"):
+                self.db.update_file_status(f["id"], "FAILED_LOGIN_REQUIRED")
 
         self.db.update_project_status(project_id, "downloaded")
