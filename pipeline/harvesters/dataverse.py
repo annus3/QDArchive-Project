@@ -24,6 +24,54 @@ def _fmt_bytes(n: int) -> str:
     return f"{n:.1f} TB"
 
 
+def _classify_download_failure(exc: Exception) -> str:
+    """Map a download exception to a DOWNLOAD_RESULT enum value."""
+    msg = str(exc).lower()
+    if "401" in msg or "403" in msg or "login" in msg or "unauthoriz" in msg or "forbidden" in msg:
+        return "FAILED_LOGIN_REQUIRED"
+    if "too large" in msg or "413" in msg:
+        return "FAILED_TOO_LARGE"
+    return "FAILED_SERVER_UNRESPONSIVE"
+
+
+# Mapping from Dataverse/Columbia license strings (seen in the wild) to the
+# sq26-grading LICENSE enum. Entries not present here are dropped from the
+# submission DB (per the supervisor's "do not change data" rule — we keep the
+# raw value in the operational DB's projects.license column).
+LICENSE_ENUM = {
+    "CC BY", "CC BY-SA", "CC BY-NC", "CC BY-ND", "CC BY-NC-ND",
+    "CC0", "ODbL", "ODC-By", "PDDL", "ODbL-1.0", "ODC-By-1.0",
+}
+
+
+def normalize_license(value: str) -> str | None:
+    """Return the enum-valid form of a license string, or None if not mappable."""
+    if not value:
+        return None
+    v = value.strip()
+    if not v:
+        return None
+    if v in LICENSE_ENUM:
+        return v
+    # Strip version suffixes that appear commonly in Dataverse (e.g. "CC BY 4.0").
+    lower = v.lower()
+    if lower.startswith("cc0"):
+        return "CC0"
+    if lower.startswith("cc by-nc-nd"):
+        return "CC BY-NC-ND"
+    if lower.startswith("cc by-nc-sa"):
+        return None  # Not in enum
+    if lower.startswith("cc by-nc"):
+        return "CC BY-NC"
+    if lower.startswith("cc by-sa"):
+        return "CC BY-SA"
+    if lower.startswith("cc by-nd"):
+        return "CC BY-ND"
+    if lower.startswith("cc by"):
+        return "CC BY"
+    return None
+
+
 class DataverseHarvester(BaseHarvester):
 
     def __init__(self, db: Database, repo_key: str, progress=None):
@@ -45,7 +93,7 @@ class DataverseHarvester(BaseHarvester):
             if seen_ids:
                 logger.info("[%s] Resuming — %d projects already in DB", self.name, len(seen_ids))
 
-        # --- Phase A: dataset-level search --------------------------------
+        # Phase A: dataset-level search
         for query in queries:
             if self.progress and self.progress.is_query_complete(self.repo_key, "dataset_search", query):
                 logger.info("[%s] Skipping completed dataset search: %s", self.name, query)
@@ -56,7 +104,7 @@ class DataverseHarvester(BaseHarvester):
             if self.progress:
                 self.progress.mark_query_complete(self.repo_key, "dataset_search", query)
 
-        # --- Phase B: file-level search -----------------------------------
+        # Phase B: file-level search
         file_queries = self._build_file_queries(queries)
         for query in file_queries:
             if self.progress and self.progress.is_query_complete(self.repo_key, "file_search", query):
@@ -323,7 +371,8 @@ class DataverseHarvester(BaseHarvester):
         for a in authors:
             self.db.insert_person_role(project_id, a, "AUTHOR")
         for c in contacts:
-            self.db.insert_person_role(project_id, c, "CONTACT")
+            # "Contact" is not in the sq26 PERSON_ROLE enum — map to OTHER
+            self.db.insert_person_role(project_id, c, "OTHER")
 
         # Fetch detailed dataset info (includes files and license)
         self._fetch_dataset_details(project_id, global_id)
@@ -524,14 +573,13 @@ class DataverseHarvester(BaseHarvester):
         all_ok = True
 
         for f in files:
-            if f["download_status"] == "downloaded":
+            if f["status"] == "SUCCEEDED":
                 continue
-            # For analysis pass, also retry files that were previously skipped
-            # (e.g. by the old DOWNLOAD_EXTENSIONS whitelist)
-            if category != "analysis" and f["download_status"] == "skipped":
+            # Retry files that were previously skipped
+            if category != "analysis" and f["status"] == "FAILED_TOO_LARGE":
                 continue
             if not f["download_url"]:
-                self.db.update_file_status(f["id"], "skipped")
+                self.db.update_file_status(f["id"], "FAILED_SERVER_UNRESPONSIVE")
                 continue
 
             # Category filter: if set, only download files of that category
@@ -551,10 +599,10 @@ class DataverseHarvester(BaseHarvester):
                 continue
 
             if config.MAX_FILE_SIZE_MB > 0 and f["file_size_bytes"] and f["file_size_bytes"] > config.MAX_FILE_SIZE_MB * 1024 * 1024:
-                self.db.update_file_status(f["id"], "skipped")
+                self.db.update_file_status(f["id"], "FAILED_TOO_LARGE")
                 self.db.log_challenge(
                     "large_file",
-                    f"File '{f['filename']}' exceeds size limit ({f['file_size_bytes']} bytes)",
+                    f"File '{f['file_name']}' exceeds size limit ({f['file_size_bytes']} bytes)",
                     project_id=project_id,
                     source_repository=self.repo_key,
                 )
@@ -562,25 +610,26 @@ class DataverseHarvester(BaseHarvester):
 
             # Budget check (pre-flight estimate if size known)
             if budget and f["file_size_bytes"] and not budget.can_afford(f["file_size_bytes"]):
-                logger.info("[%s] Budget exhausted — skipping %s", self.name, f["filename"])
+                logger.info("[%s] Budget exhausted — skipping %s", self.name, f["file_name"])
                 return  # Stop this project entirely; orchestrator will stop the pass
 
-            local_path = os.path.join(dest_dir, f["filename"])
+            local_path = os.path.join(dest_dir, f["file_name"])
             try:
                 self._download_file(f["download_url"], local_path)
                 actual_size = os.path.getsize(local_path)
-                self.db.update_file_status(f["id"], "downloaded", local_path)
+                self.db.update_file_status(f["id"], "SUCCEEDED", local_path)
                 if budget:
                     budget.record(actual_size)
                 logger.info("[%s] Downloaded: %s (%s)",
-                            self.name, f["filename"],
+                            self.name, f["file_name"],
                             _fmt_bytes(actual_size))
             except Exception as exc:
                 all_ok = False
-                self.db.update_file_status(f["id"], "failed")
+                status = _classify_download_failure(exc)
+                self.db.update_file_status(f["id"], status)
                 self.db.log_challenge(
                     "api_error",
-                    f"Download failed for '{f['filename']}': {exc}",
+                    f"Download failed for '{f['file_name']}': {exc}",
                     project_id=project_id,
                     source_repository=self.repo_key,
                 )
