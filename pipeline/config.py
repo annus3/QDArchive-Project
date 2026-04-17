@@ -8,7 +8,13 @@ import os
 # Paths
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
-DB_PATH = os.path.join(PROJECT_ROOT, "23221189-sq26.db")
+# Operational DB: carries all extras (technical_challenges, extra columns,
+# analytics). Used by harvesters, downloaders, exports.
+DB_PATH = os.path.join(PROJECT_ROOT, "23221189-sq26-full.db")
+# Submission DB: stripped to the sq26-grading required schema. Built by
+# make_submission_db.py from the operational DB. This is the file the
+# grader evaluates — filename must match ^\d{8}-(?:seeding|sq26)\.db$.
+SUBMISSION_DB_PATH = os.path.join(PROJECT_ROOT, "23221189-sq26.db")
 EXPORTS_DIR = os.path.join(PROJECT_ROOT, "exports")
 
 
