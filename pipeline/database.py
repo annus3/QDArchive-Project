@@ -65,7 +65,7 @@ class Database:
         CREATE TABLE IF NOT EXISTS files (
             id                 INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id         INTEGER NOT NULL REFERENCES projects(id),
-            filename           TEXT,
+            file_name          TEXT,                     -- required schema
             file_extension     TEXT,
             file_type          TEXT,                     -- extension without dot (e.g. "xlsx") — required schema
             file_category      TEXT DEFAULT 'unknown',   -- analysis | primary | additional | unknown
@@ -73,7 +73,7 @@ class Database:
             download_url       TEXT,
             local_path         TEXT,
             checksum           TEXT,
-            download_status    TEXT DEFAULT 'pending',  -- pending | downloaded | failed | skipped
+            status             TEXT DEFAULT 'FAILED_SERVER_UNRESPONSIVE',  -- DOWNLOAD_RESULT enum
             downloaded_at      TEXT,
             created_at         TEXT
         );
@@ -149,6 +149,26 @@ class Database:
         for col, typedef in file_migrations:
             if col not in file_cols:
                 self.conn.execute(f"ALTER TABLE files ADD COLUMN {col} {typedef}")
+
+        # Rename legacy columns to sq26-grading required names
+        file_cols = {r[1] for r in self.conn.execute("PRAGMA table_info(files)")}
+        if "filename" in file_cols and "file_name" not in file_cols:
+            self.conn.execute("ALTER TABLE files RENAME COLUMN filename TO file_name")
+        if "download_status" in file_cols and "status" not in file_cols:
+            self.conn.execute("ALTER TABLE files RENAME COLUMN download_status TO status")
+        self.conn.commit()
+
+        # Remap legacy file status values to DOWNLOAD_RESULT enum
+        self.conn.execute(
+            "UPDATE files SET status='SUCCEEDED' WHERE status='downloaded'"
+        )
+        self.conn.execute(
+            "UPDATE files SET status='FAILED_TOO_LARGE' WHERE status='skipped'"
+        )
+        self.conn.execute(
+            "UPDATE files SET status='FAILED_SERVER_UNRESPONSIVE' "
+            "WHERE status IN ('failed','pending') OR status IS NULL"
+        )
 
         # Backfill existing rows — projects
         self.conn.execute(
@@ -430,12 +450,16 @@ class Database:
 
     # Files
     def insert_file(self, **kwargs) -> int:
+        # Accept legacy "filename" kwarg for backward compatibility with callers
+        if "filename" in kwargs and "file_name" not in kwargs:
+            kwargs["file_name"] = kwargs.pop("filename")
+
         # Skip if this file already exists for the project (idempotent re-harvest)
         pid = kwargs.get("project_id")
-        fname = kwargs.get("filename")
+        fname = kwargs.get("file_name")
         if pid and fname:
             existing = self.conn.execute(
-                "SELECT id FROM files WHERE project_id=? AND filename=?",
+                "SELECT id FROM files WHERE project_id=? AND file_name=?",
                 (pid, fname),
             ).fetchone()
             if existing:
@@ -450,6 +474,8 @@ class Database:
         if ext and "file_type" not in kwargs:
             kwargs["file_type"] = ext.lstrip(".")
 
+        # Default new rows to the enum "pending-equivalent" (before a download attempt)
+        kwargs.setdefault("status", "FAILED_SERVER_UNRESPONSIVE")
         kwargs.setdefault("created_at", _now_iso())
         cols = list(kwargs.keys())
         placeholders = ", ".join(f":{c}" for c in cols)
@@ -464,16 +490,26 @@ class Database:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    # DOWNLOAD_RESULT enum (sq26-grading). Legacy callers may still pass the
+    # old lowercase values; map them here so existing code keeps working.
+    _STATUS_ALIASES = {
+        "downloaded": "SUCCEEDED",
+        "failed": "FAILED_SERVER_UNRESPONSIVE",
+        "pending": "FAILED_SERVER_UNRESPONSIVE",
+        "skipped": "FAILED_TOO_LARGE",
+    }
+
     def update_file_status(self, file_id: int, status: str, local_path: str | None = None):
         now = _now_iso()
+        status = self._STATUS_ALIASES.get(status, status)
         if local_path:
             self.conn.execute(
-                "UPDATE files SET download_status=?, local_path=?, downloaded_at=? WHERE id=?",
+                "UPDATE files SET status=?, local_path=?, downloaded_at=? WHERE id=?",
                 (status, local_path, now, file_id),
             )
         else:
             self.conn.execute(
-                "UPDATE files SET download_status=?, downloaded_at=? WHERE id=?",
+                "UPDATE files SET status=?, downloaded_at=? WHERE id=?",
                 (status, now, file_id),
             )
         self.conn.commit()
