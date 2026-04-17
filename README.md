@@ -126,7 +126,7 @@ Exports the database to CSV files, separated by repository. Each repo gets its o
 
 - **ColumbiaHarvester** — Custom harvester for Columbia's Digital Library Collections platform. Parses Fedora repository metadata, registers child resources (audio, video, text) as files with guessed extensions based on format type. Downloads full JSON metadata per project since DLC media is auth-gated and not directly accessible.
 
-- **Database** — SQLite with WAL mode and foreign key enforcement. Six tables: `projects` (30+ columns), `files` (13 columns), `keywords`, `person_role`, `licenses`, and `technical_challenges`. Supports upsert on `(source_repository, source_id)` to prevent duplicates. Has methods for QDA count computation, per-repo filtering, and CSV export.
+- **Database** — SQLite with WAL mode and foreign key enforcement. Five tables: `projects`, `files`, `keywords`, `person_role`, and `licenses`. Column names follow the schema: `file_name`, `status` with `DOWNLOAD_RESULT` enum (`SUCCEEDED`, `FAILED_TOO_LARGE`, `FAILED_SERVER_UNRESPONSIVE`, `FAILED_LOGIN_REQUIRED`). Supports upsert on `(source_repository, source_id)` to prevent duplicates.
 
 - **Orchestrator** — Factory pattern for creating harvesters based on repository type. Coordinates the three pipeline phases. Downloads use a two-pass strategy: Pass 1 fetches QDA (analysis) files first, Pass 2 fetches remaining files. Both share a global byte budget (`MAX_TOTAL_DOWNLOAD_GB`).
 
@@ -228,19 +228,17 @@ QDA extensions are recognized from 9 tools (42 extensions total):
 
 ## Database Schema
 
-Six tables in `23221189-sq26.db` (SQLite):
+Five tables in `23221189-sq26.db` (SQLite):
 
-**projects** — One row per discovered dataset/collection. Key columns include both the required schema fields (`repository_id`, `repository_url`, `project_url`, `query_string`, `upload_date`, `download_date`, `download_method`, `download_repository_folder`, `download_project_folder`, `language`, `version`) and extended fields (`source_repository`, `source_id`, `title`, `authors` (JSON), `description`, `doi` (full URL), `license`, `keywords` (JSON), `has_qda_files`, `qda_file_count`, `matched_queries` (JSON), `download_status`, `metadata_json`). Unique constraint on `(source_repository, source_id)`.
+**projects** — One row per discovered dataset/collection. Required schema fields: `repository_id`, `repository_url`, `project_url`, `query_string`, `upload_date`, `download_date`, `download_method`, `download_repository_folder`, `download_project_folder`, `language`, `version`, `title`, `description`, `doi`. Unique constraint on `(source_repository, source_id)`.
 
-**files** — One row per file within a project. Columns: `project_id` (FK), `filename`, `file_extension`, `file_type` (extension without dot, e.g. "xlsx"), `file_category` (analysis/primary/additional/unknown), `file_size_bytes`, `download_url`, `checksum`, `download_status`.
+**files** — One row per file within a project. Columns: `project_id` (FK), `file_name`, `file_type` (extension without dot, e.g. "xlsx"), `status`. Status uses the `DOWNLOAD_RESULT` enum: `SUCCEEDED`, `FAILED_TOO_LARGE`, `FAILED_SERVER_UNRESPONSIVE`, `FAILED_LOGIN_REQUIRED`.
 
 **keywords** — Normalized keyword table. Columns: `project_id` (FK), `keyword`. One row per keyword per project.
 
-**person_role** — Normalized person/role table. Columns: `project_id` (FK), `name`, `role` (AUTHOR/CONTACT/UNKNOWN).
+**person_role** — Normalized person/role table. Columns: `project_id` (FK), `name`, `role` (`AUTHOR` / `OTHER`).
 
 **licenses** — Normalized license table. Columns: `project_id` (FK), `license`.
-
-**technical_challenges** — Logs data-related issues encountered during harvesting: `challenge_type` (rate_limit, access_denied, api_error, etc.), `description`, linked to project and repository.
 
 ---
 
@@ -300,7 +298,7 @@ The database and downloaded files are gitignored. CSV exports under `exports/` c
 
 ## Known Limitations
 
-- **Columbia is a primary data archive, not a QDA repository** — The Columbia Oral History Archive contains oral history recordings and transcripts (qualitative primary data), not QDA analysis project files. The DLC platform doesn't expose direct download URLs — content is streaming-only or requires institutional access. The harvester saves full JSON metadata per project as a permanent record, but media files are marked as `skipped`. Additionally, 93 Columbia projects use the `http://rightsstatements.org/vocab/InC/1.0/` rights statement ("In Copyright" — not an open license). See the "Why Columbia Oral History Has 0 QDA Files" section above for details.
+- **Columbia is a primary data archive, not a QDA repository** — The Columbia Oral History Archive contains oral history recordings and transcripts (qualitative primary data), not QDA analysis project files. The DLC platform doesn't expose direct download URLs — content is streaming-only or requires institutional access. The harvester saves full JSON metadata per project as a permanent record, but media files are marked as `FAILED_LOGIN_REQUIRED`. Additionally, 93 Columbia projects use the `http://rightsstatements.org/vocab/InC/1.0/` rights statement ("In Copyright" — not an open license). See the "Why Columbia Oral History Has 0 QDA Files" section above for details.
 
 - **QDA files are rare** — Out of 2,285 projects and 61,232 files, only 173 QDA analysis files were found across 117 projects (30 `.nvp`, 27 `.qdpx`, 27 `.nvpx`, 17 `.mtr`, 13 `.mx22`, 13 `.mx20`, 10 `.atlproj`, and others). All from Harvard Dataverse; Columbia Oral History has none. This confirms the hypothesis that QDA project files are rarely shared, which is the gap QDArchive is meant to fill.
 
