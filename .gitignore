@@ -45,9 +45,12 @@ logs/
 
 # --- Database (binary, rebuilt from pipeline) ---
 *.db
+23221189-sq26.db.bak
 !23221189-sq26.db
 *.db-wal
 *.db-shm
+.*db.bak
+sub_db.py
 
 # --- Pipeline progress (resume state, regenerated) ---
 qdarchive.progress.json
