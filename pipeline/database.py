@@ -23,11 +23,31 @@ class Database:
     def __init__(self, db_path: str | None = None):
         self.db_path = db_path or config.DB_PATH
         self.conn = sqlite3.connect(self.db_path)
+        self._reject_derived_db()
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self._pending_ops = 0
         self._create_tables()
+
+    def _reject_derived_db(self):
+        """Refuse to open a derived submission/classification DB.
+
+        Those DBs are build artifacts (produced by sub_db.py) whose projects
+        table lacks the operational columns (e.g. source_repository). Opening
+        one here would mutate it: the WAL pragma persists in the file, and
+        _create_tables()/_migrate() would bolt on operational schema. Runs
+        before any PRAGMA so a rejected file is left byte-identical.
+        """
+        cols = {r[1] for r in self.conn.execute("PRAGMA table_info(projects)")}
+        if cols and "source_repository" not in cols:
+            self.conn.close()
+            raise ValueError(
+                f"{self.db_path} looks like a derived submission/classification "
+                "database (projects table has no source_repository column). "
+                "The pipeline must run against the operational DB "
+                f"({config.DB_PATH}); derived DBs are rebuilt from it by sub_db.py."
+            )
 
     
     # Schema
@@ -88,7 +108,7 @@ class Database:
             id                 INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id         INTEGER NOT NULL REFERENCES projects(id),
             name               TEXT NOT NULL,
-            role               TEXT NOT NULL DEFAULT 'UNKNOWN'  -- AUTHOR | CONTACT | UNKNOWN
+            role               TEXT NOT NULL DEFAULT 'UNKNOWN'  -- PERSON_ROLE enum: UPLOADER | AUTHOR | OWNER | OTHER | UNKNOWN
         );
 
         CREATE TABLE IF NOT EXISTS licenses (
@@ -135,6 +155,12 @@ class Database:
             ("download_repository_folder", "TEXT"),
             ("download_project_folder", "TEXT"),
             ("download_version_folder", "TEXT"),
+            # Phase 2 — classification columns (see CLASSIFICATION_RESEARCH.md §10.4)
+            ("type", "TEXT"),                          # PROJECT_TYPE enum
+            ("primary_class", "TEXT"),                 # ISIC division code (e.g. "R86")
+            ("secondary_class", "TEXT"),               # runner-up division code or NULL
+            ("classification_confidence", "REAL"),     # cosine similarity of primary
+            ("tags", "TEXT"),                          # JSON array of searchable tags
         ]
         for col, typedef in project_migrations:
             if col not in existing:
@@ -145,6 +171,10 @@ class Database:
         file_migrations = [
             ("file_type", "TEXT"),
             ("file_category", "TEXT DEFAULT 'unknown'"),
+            # Phase 2 — per-file classification columns (spec Step 3)
+            ("primary_class", "TEXT"),
+            ("secondary_class", "TEXT"),
+            ("classification_confidence", "REAL"),
         ]
         for col, typedef in file_migrations:
             if col not in file_cols:
@@ -599,6 +629,135 @@ class Database:
     def get_challenges(self) -> list[dict]:
         rows = self.conn.execute(
             "SELECT * FROM technical_challenges ORDER BY created_at"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+    # Classification (Phase 2)
+    def get_project_file_summary(self) -> list[dict]:
+        """One row per project with the flags needed to derive PROJECT_TYPE.
+
+        Returns ``project_id``, ``has_analysis``, ``has_primary`` and ``n_files``,
+        aggregated from the ``files.file_category`` values already stored during
+        acquisition (no new extension logic).
+        """
+        rows = self.conn.execute(
+            """
+            SELECT p.id AS project_id,
+                   MAX(CASE WHEN LOWER(COALESCE(f.file_category,''))='analysis'
+                            THEN 1 ELSE 0 END) AS has_analysis,
+                   MAX(CASE WHEN LOWER(COALESCE(f.file_category,''))='primary'
+                            THEN 1 ELSE 0 END) AS has_primary,
+                   COUNT(f.id) AS n_files
+            FROM projects p
+            LEFT JOIN files f ON f.project_id = p.id
+            GROUP BY p.id
+            """
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def set_project_type(self, project_id: int, project_type: str):
+        self.conn.execute(
+            "UPDATE projects SET type=?, updated_at=? WHERE id=?",
+            (project_type, _now_iso(), project_id),
+        )
+        self._maybe_commit()
+
+    def set_project_classification(self, project_id: int, primary: str | None,
+                                   secondary: str | None, confidence: float | None,
+                                   tags: list[str] | None):
+        self.conn.execute(
+            """UPDATE projects
+               SET primary_class=?, secondary_class=?, classification_confidence=?,
+                   tags=?, updated_at=?
+               WHERE id=?""",
+            (primary, secondary, confidence,
+             json.dumps(tags or [], ensure_ascii=False), _now_iso(), project_id),
+        )
+        self._maybe_commit()
+
+    def set_file_classification(self, file_id: int, primary: str | None,
+                                secondary: str | None, confidence: float | None):
+        self.conn.execute(
+            """UPDATE files
+               SET primary_class=?, secondary_class=?, classification_confidence=?
+               WHERE id=?""",
+            (primary, secondary, confidence, file_id),
+        )
+        self._maybe_commit()
+
+    def get_classifiable_projects(self, source_repository: str,
+                                  types: tuple[str, ...]) -> list[dict]:
+        """Projects of the given types for one repository (ISIC-classification scope)."""
+        placeholders = ",".join("?" for _ in types)
+        rows = self.conn.execute(
+            f"""SELECT * FROM projects
+                WHERE source_repository=? AND type IN ({placeholders})
+                ORDER BY id""",
+            (source_repository, *types),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def classification_stats(self, source_repository: str,
+                             types: tuple[str, ...]) -> dict:
+        """Per-repository Step 4b statistics: type counts + dominant primary class."""
+        type_rows = self.conn.execute(
+            "SELECT COALESCE(type,'UNCLASSIFIED') AS t, COUNT(*) AS c "
+            "FROM projects WHERE source_repository=? GROUP BY t",
+            (source_repository,),
+        ).fetchall()
+        type_counts = {r["t"]: r["c"] for r in type_rows}
+
+        placeholders = ",".join("?" for _ in types)
+        dom = self.conn.execute(
+            f"""SELECT primary_class, COUNT(*) AS c
+                FROM projects
+                WHERE source_repository=? AND type IN ({placeholders})
+                      AND primary_class IS NOT NULL AND primary_class != ''
+                GROUP BY primary_class ORDER BY c DESC LIMIT 1""",
+            (source_repository, *types),
+        ).fetchone()
+        return {
+            "type_counts": type_counts,
+            "dominant_class": (dom["primary_class"] if dom else None),
+            "dominant_count": (dom["c"] if dom else 0),
+        }
+
+    def classification_table_rows(self, source_repository: str,
+                                  types: tuple[str, ...]):
+        """Rows for the Step 4c table (raw division codes; renderer maps to names)."""
+        placeholders = ",".join("?" for _ in types)
+        return self.conn.execute(
+            f"""SELECT p.repository_id                                   AS repository_id,
+                       p.type                                           AS project_type,
+                       p.title                                          AS project_title,
+                       p.primary_class                                  AS primary_class,
+                       p.secondary_class                                AS secondary_class,
+                       (SELECT COUNT(*) FROM files f WHERE f.project_id=p.id)
+                                                                        AS no_project_files
+                FROM projects p
+                WHERE p.source_repository=? AND p.type IN ({placeholders})
+                ORDER BY p.repository_id, p.type, p.title""",
+            (source_repository, *types),
+        ).fetchall()
+
+    def class_distribution(self, source_repository: str,
+                           types: tuple[str, ...]) -> list[tuple[str, int]]:
+        """Primary-class distribution (desc) among classified projects for one repo."""
+        placeholders = ",".join("?" for _ in types)
+        rows = self.conn.execute(
+            f"""SELECT primary_class, COUNT(*) AS c
+                FROM projects
+                WHERE source_repository=? AND type IN ({placeholders})
+                      AND primary_class IS NOT NULL AND primary_class != ''
+                GROUP BY primary_class ORDER BY c DESC""",
+            (source_repository, *types),
+        ).fetchall()
+        return [(r["primary_class"], r["c"]) for r in rows]
+
+    def get_files_for_project_ordered(self, project_id: int) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM files WHERE project_id=? ORDER BY id", (project_id,)
         ).fetchall()
         return [dict(r) for r in rows]
 
