@@ -5,9 +5,7 @@
 # docs/: local working notes + course materials — intentionally not tracked
 docs/
 data/
-# exports/: regenerated CSVs stay ignored; Part 2 deliverables are tracked
-exports/*
-!exports/classification/
+exports/
 # Keep the committed Phase 2 taxonomy artifact (built from the ISIC5 workbook)
 !pipeline/data/
 !pipeline/data/isic_taxonomy.json
