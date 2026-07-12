@@ -198,6 +198,84 @@ def _download_pass(repo_key: str, db: Database, category: str | None,
                              project_id=row["id"], source_repository=repo_key)
 
 
+def run_classification(db: Database | None = None, repos: list[str] | None = None):
+    """
+    Part 2 (classification phase): classify projects and primary files.
+
+    Step 1 (all projects): derive ``PROJECT_TYPE`` from the file categories already
+    stored during acquisition (reuses ``file_category``; no new extension lists).
+
+    Steps 2–3 (QDA_PROJECT + QD_PROJECT only, by repository): assign an ISIC Rev. 5
+    division to the project (as the sum of its files + metadata) and to each primary
+    data file, using the dependency-light TF-IDF classifier. No default bucket.
+    """
+    from .classifier import (
+        IsicClassifier, derive_project_type, project_text, file_text,
+    )
+
+    db = db or Database()
+    repos = repos or [k for k, v in config.REPOSITORIES.items() if v.get("enabled")]
+
+    # ── Step 1: derive PROJECT_TYPE for every project ────────────────────────
+    logger.info("─" * 60)
+    logger.info("  Deriving project types (all projects)")
+    logger.info("─" * 60)
+    type_counts = {t: 0 for t in config.PROJECT_TYPES}
+    for summ in db.get_project_file_summary():
+        ptype = derive_project_type(
+            bool(summ["has_analysis"]), bool(summ["has_primary"]), summ["n_files"] > 0
+        )
+        db.set_project_type(summ["project_id"], ptype)
+        type_counts[ptype] += 1
+    db.flush()
+    logger.info("  Project types: %s", type_counts)
+
+    # ── Steps 2–3: ISIC classification of QDA/QD projects + their primary files ─
+    clf = IsicClassifier()
+    n_projects = 0
+    n_files = 0
+    for repo_key in repos:
+        if repo_key not in config.REPOSITORIES:
+            logger.warning("Unknown repository: %s — skipping", repo_key)
+            continue
+        projects = db.get_classifiable_projects(repo_key, config.CLASSIFIABLE_TYPES)
+        logger.info("[%s] ISIC-classifying %d projects …", repo_key, len(projects))
+
+        for proj in projects:
+            pid = proj["id"]
+            files = db.get_files_for_project_ordered(pid)
+
+            text = project_text(
+                title=proj.get("title") or "",
+                description=proj.get("description") or "",
+                scope=proj.get("project_scope") or "",
+                keywords=db.get_keywords_for_project(pid),
+                licenses=db.get_licenses_for_project(pid),
+                authors=[p["name"] for p in db.get_persons_for_project(pid)],
+                file_names=[f.get("file_name") or "" for f in files],
+            )
+            res = clf.classify(text)
+            db.set_project_classification(
+                pid, res.primary, res.secondary, res.confidence, res.tags
+            )
+            n_projects += 1
+
+            # Per-file classification of primary data files (spec Step 3).
+            for f in files:
+                if (f.get("file_category") or "").lower() != "primary":
+                    continue
+                fres = clf.classify(file_text(f.get("file_name") or ""))
+                db.set_file_classification(
+                    f["id"], fres.primary, fres.secondary, fres.confidence
+                )
+                n_files += 1
+        db.flush()
+
+    db.flush()
+    logger.info("Classification complete: %d projects, %d primary files", n_projects, n_files)
+    return db
+
+
 def run_full_pipeline(repos: list[str] | None = None, queries: list[str] | None = None,
                       download: bool = True, only_qda: bool = False,
                       fresh: bool = False):
