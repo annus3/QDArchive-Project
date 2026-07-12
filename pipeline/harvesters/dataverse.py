@@ -34,42 +34,9 @@ def _classify_download_failure(exc: Exception) -> str:
     return "FAILED_SERVER_UNRESPONSIVE"
 
 
-# Mapping from Dataverse/Columbia license strings (seen in the wild) to the
-# sq26-grading LICENSE enum. Entries not present here are dropped from the
-# submission DB (per the supervisor's "do not change data" rule — we keep the
-# raw value in the operational DB's projects.license column).
-LICENSE_ENUM = {
-    "CC BY", "CC BY-SA", "CC BY-NC", "CC BY-ND", "CC BY-NC-ND",
-    "CC0", "ODbL", "ODC-By", "PDDL", "ODbL-1.0", "ODC-By-1.0",
-}
-
-
-def normalize_license(value: str) -> str | None:
-    """Return the enum-valid form of a license string, or None if not mappable."""
-    if not value:
-        return None
-    v = value.strip()
-    if not v:
-        return None
-    if v in LICENSE_ENUM:
-        return v
-    # Strip version suffixes that appear commonly in Dataverse (e.g. "CC BY 4.0").
-    lower = v.lower()
-    if lower.startswith("cc0"):
-        return "CC0"
-    if lower.startswith("cc by-nc-nd"):
-        return "CC BY-NC-ND"
-    if lower.startswith("cc by-nc-sa"):
-        return None  # Not in enum
-    if lower.startswith("cc by-nc"):
-        return "CC BY-NC"
-    if lower.startswith("cc by-sa"):
-        return "CC BY-SA"
-    if lower.startswith("cc by-nd"):
-        return "CC BY-ND"
-    if lower.startswith("cc by"):
-        return "CC BY"
-    return None
+# License normalization to the sq26-grading enum lives in sub_db.py
+# (_normalize_license), applied when the submission DB is built. The
+# operational DB keeps the raw license string untouched.
 
 
 class DataverseHarvester(BaseHarvester):
@@ -171,8 +138,12 @@ class DataverseHarvester(BaseHarvester):
                 self.progress.save_offset(self.repo_key, "dataset_search", query, start)
             if start >= total:
                 break
-            if len(seen_ids) >= config.MAX_RESULTS_PER_QUERY:
-                logger.info("[%s] Reached result cap (%d) for query '%s'",
+            # Per-query pagination cap. seen_ids is only a cross-query dedup set
+            # (and is pre-seeded from the DB on resume), so it must not drive the
+            # cap — use this query's own offset, which the progress tracker
+            # already persists across resumes.
+            if start >= config.MAX_RESULTS_PER_QUERY:
+                logger.info("[%s] Reached per-query result cap (%d) for query '%s'",
                             self.name, config.MAX_RESULTS_PER_QUERY, query)
                 break
 
