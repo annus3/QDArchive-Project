@@ -138,8 +138,11 @@ class ColumbiaHarvester(BaseHarvester):
 
             if page >= meta.get("total_pages", 1):
                 break
-            if len(seen_ids) >= max_results:
-                logger.info("[%s] Reached result cap (%d)", self.name, max_results)
+            # Per-query pagination cap. seen_ids is only a cross-query dedup set
+            # (pre-seeded from the DB on resume), so the cap is based on this
+            # query's own page position instead.
+            if page * per_page >= max_results:
+                logger.info("[%s] Reached per-query result cap (%d)", self.name, max_results)
                 break
 
             page += 1
