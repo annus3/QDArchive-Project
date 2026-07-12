@@ -12,7 +12,7 @@ DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 # analytics). Used by harvesters, downloaders, exports.
 DB_PATH = os.path.join(PROJECT_ROOT, "23221189-sq26-full.db")
 # Submission DB: stripped to the sq26-grading required schema. Built by
-# make_submission_db.py from the operational DB. This is the file the
+# sub_db.py from the operational DB. This is the file the
 # grader evaluates — filename must match ^\d{8}-(?:seeding|sq26)\.db$.
 SUBMISSION_DB_PATH = os.path.join(PROJECT_ROOT, "23221189-sq26.db")
 EXPORTS_DIR = os.path.join(PROJECT_ROOT, "exports")
@@ -193,3 +193,41 @@ MAX_RETRIES = 3                 # Retry count for failed downloads
 MAX_RESULTS_PER_QUERY = 250     # Max records to fetch per search query (cap pagination)
 BATCH_COMMIT_SIZE = 50          # Commit to DB every N operations (batch writes)
 PROGRESS_FILE = os.path.join(PROJECT_ROOT, "qdarchive.progress.json")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Phase 2 — Classification settings
+# (see docs/CLASSIFICATION_RESEARCH.md)
+# ─────────────────────────────────────────────────────────────────────────────
+
+# PROJECT_TYPE enum values (spec Step 1). Derived from file categories only.
+PROJECT_TYPE_QDA = "QDA_PROJECT"
+PROJECT_TYPE_QD = "QD_PROJECT"
+PROJECT_TYPE_OTHER = "OTHER_PROJECT"
+PROJECT_TYPE_NONE = "NOT_A_PROJECT"
+PROJECT_TYPES = (PROJECT_TYPE_QDA, PROJECT_TYPE_QD, PROJECT_TYPE_OTHER, PROJECT_TYPE_NONE)
+
+# Only these project types get an ISIC classification (spec Step 3).
+CLASSIFIABLE_TYPES = (PROJECT_TYPE_QDA, PROJECT_TYPE_QD)
+
+# ISIC Rev. 5 division taxonomy artifact (built by build_isic_taxonomy.py from
+# docs/ISIC5_Exp_Notes_11Mar2024.xlsx). Committed under a non-git-ignored path.
+ISIC_TAXONOMY_PATH = os.path.join(PROJECT_ROOT, "pipeline", "data", "isic_taxonomy.json")
+
+# A runner-up division is reported as secondary_class only if its cosine
+# similarity is at least this fraction of the best score (else it is noise).
+SECONDARY_MIN_RATIO = 0.6
+
+# Minimum cosine similarity for the primary division. Below this the project/file
+# is left unclassified (NULL) rather than forced into a weak bucket — implements
+# the "no default bucket / low-confidence → NULL" policy (CLASSIFICATION_RESEARCH
+# §10.2). Configurable; 0.0 disables the floor (only zero-overlap → NULL).
+MIN_PRIMARY_CONFIDENCE = 0.05
+
+# Number of top TF-IDF terms kept as searchable tags per project.
+CLASSIFICATION_TAG_COUNT = 8
+
+# Derived classification database (spec Step 4a). Built from the operational DB
+# by sub_db.build_classification_db(); git-tagged `classification-results`.
+CLASSIFICATION_DB_PATH = os.path.join(PROJECT_ROOT, "23221189-sq26-classification.db")
+
