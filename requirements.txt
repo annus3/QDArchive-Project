@@ -1,1 +1,8 @@
+# Part 1 — Acquisition (harvest + download)
 requests>=2.31.0
+
+# Part 2 — Classification deliverables only (the classifier core is stdlib).
+# openpyxl: XLSX table (spec Step 4c); reportlab: vector PDF report (Step 4d).
+# reportlab pulls in Pillow transitively (needed for the cover-page logo).
+openpyxl>=3.1.0
+reportlab>=4.0.0
