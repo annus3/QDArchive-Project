@@ -2,14 +2,18 @@
 
 A Python pipeline for discovering and cataloging qualitative research data across open repositories. Built as part of the QDArchive project at FAU, where the long-term goal is to create an open archive for qualitative data analysis (QDA) files : think `.qdpx`, NVivo, MAXQDA, ATLAS.ti project files that researchers can actually reuse.
 
-Right now, the pipeline focuses on harvesting metadata and file information from two assigned repositories:
+Right now, the pipeline covers two parts for two assigned repositories:
+**Part 1 — Acquisition** (harvest metadata + download files) and **Part 2 —
+Classification** (assign each project a type and an ISIC Rev. 5 economic-sector
+division).
 
 | # | Dataset | URL |
 |---|---------|-----|
 | 10 | Harvard Dataverse | [dataverse.harvard.edu](https://dataverse.harvard.edu/) |
 | 19 | Columbia Oral History Archive | [dlc.library.columbia.edu](https://dlc.library.columbia.edu/) |
 
-> **Note:** This README will be updated as the project evolves across upcoming sessions and implementations.
+> **Status:** Part 1 (acquisition) and Part 2 (classification) are both implemented.
+> Part 3 (analysis) is future work.
 
 ---
 
@@ -29,49 +33,47 @@ That is what this pipeline does it systematically : searches repositories, colle
 QDArchive-Project/
 ├── pipeline/
 │   ├── harvesters/
-│   │   ├── __init__.py
-│   │   ├── base.py             # Abstract base class — HTTP session, rate limiting, retries
+│   │   ├── base.py             # Abstract base — HTTP session, rate limiting, retries, file classification
 │   │   ├── columbia.py         # Columbia DLC harvester (Blacklight JSON API)
 │   │   └── dataverse.py        # Harvard Dataverse harvester (Dataverse Search API)
+│   ├── data/
+│   │   └── isic_taxonomy.json  # ISIC Rev. 5 division corpus 
 │   ├── __init__.py
-│   ├── config.py               # Configuration — repos, queries, extensions, limits
-│   ├── database.py             # SQLite schema, CRUD, QDA counts, CSV export
-│   ├── orchestrator.py         # Coordinates harvesters and pipeline phases
-│   └── progress.py             # Harvest progress/resume state tracker
+│   ├── config.py               # Config — repos, queries, extensions, limits, classification settings
+│   ├── database.py             # SQLite schema, idempotent migrations, CRUD, CSV export, classification helpers
+│   ├── orchestrator.py         # Coordinates harvest / download / classification phases
+│   ├── progress.py             # Harvest progress/resume state tracker
+│   ├── classifier.py           # Project-type derivation + ISIC TF-IDF/cosine classifier (stdlib)
+│   └── reports.py              # XLSX table + vector PDF report + statistics
 ├── data/                         # Downloaded files (gitignored)
-│   ├── harvard_dataverse/
-│   │   └── doi_10.xxxx_xxx/      # QDA + primary + additional files
-│   └── columbia_oral_history/
-│       └── cul_xxx/
-│           └── metadata.json     # Full API metadata (media is auth-gated)
-├── exports/                      # CSV exports (gitignored)
-│   ├── harvard_dataverse/
-│   │   ├── projects.csv
-│   │   ├── files.csv
-│   │   └── ...
-│   ├── columbia_oral_history/
-│   │   ├── projects.csv
-│   │   ├── files.csv
-│   │   └── ...
-│   └── combined/
-│       └── ...
+├── exports/                      # CSV exports (gitignored) + Part 2 deliverables (tracked)
+│   ├── harvard_dataverse/  columbia_oral_history/  combined/   # per-repo + combined CSVs
+│   └── classification/           # XLSX table + vector PDF report (tracked in git)
 ├── .gitignore
-├── 23221189-sq26-full.db       # additional SQLite database (6 tables incl. technical_challenges + analytics columns)
-├── 23221189-sq26.db            # Submission SQLite database (5 tables, required columns + enums only)
+├── 23221189-sq26-full.db            # Operational DB (6 tables + analytics + classification columns)
+├── 23221189-sq26.db                 # Submission DB (5 tables, required columns + enums)
+├── 23221189-sq26-classification.db  # Classification DB (submission schema + classification columns)
 ├── LICENSE
 ├── README.md
-├── export_csv.py               # CLI — export operational database to per-repo and combined CSVs
-├── requirements.txt            # Python dependencies (just requests)
-└── run_pipeline.py             # CLI entry point — run the full pipeline
+├── build_isic_taxonomy.py      # Builds pipeline/data/isic_taxonomy.json from the ISIC5 workbook
+├── export_csv.py               # CLI — export the operational DB to per-repo & combined CSVs
+├── sub_db.py                   # CLI — build the submission & classification DBs from the operational DB
+├── requirements.txt            # requests + openpyxl + reportlab
+└── run_pipeline.py             # CLI entry point — harvest / download / export / classify
+
 ```
 
-> **Two-database layout.** The pipeline writes to `23221189-sq26-full.db` (the operational DB, carrying all analytics and the `technical_challenges` log). The stripped, `23221189-sq26.db` is the main db used for evaluation.
+> **Three-database layout.** The pipeline writes to `23221189-sq26-full.db` (the
+> *operational* DB : all analytics, the `technical_challenges` log, and the Part 2
+> classification columns). `23221189-sq26.db` is the stripped **Part 1 submission**
+> DB. `23221189-sq26-classification.db` is the **Part 2 deliverable** : the submission
+> schema plus classification columns, so the Part 1 submission DB is never modified.
 
 ---
 
 ## How the Pipeline Works
 
-The pipeline runs in three sequential phases:
+**Part 1 : Acquisition** runs in three sequential phases (harvest → download → export):
 
 ### Phase 1 — Harvest
 
@@ -79,7 +81,7 @@ Searches each repository using 25 configured search queries (13 CAQDAS tool name
 
 **Harvard Dataverse:** Uses the standard Dataverse Search API (`/api/search`) in two phases:
 - **Phase A (dataset search):** Searches with `type=dataset` to find datasets whose metadata matches the queries. For each result, a detail request to `/api/datasets/:persistentId/` fetches the file manifest.
-- **Phase B (file search):** Searches with `type=file` to find files by name — including all 42 QDA extension patterns (e.g. `*.qdpx`, `*.nvp`, `*.atlproj`). This catches datasets that contain QDA files but don't mention QDA terms in their metadata. Parent datasets discovered this way are fetched and registered automatically.
+- **Phase B (file search):** Searches with `type=file` to find files by name including all 42 QDA extension patterns (e.g. `*.qdpx`, `*.nvp`, `*.atlproj`). This catches datasets that contain QDA files but don't mention QDA terms in their metadata. Parent datasets discovered this way are fetched and registered automatically.
 
 For harvested datasets (indexed on Harvard but hosted elsewhere, e.g. Borealis, DANS, e-cienciaDatos), the detail API returns 401. In those cases, a fallback extracts file information from the search index itself.
 
@@ -92,13 +94,55 @@ Uses a **two-pass strategy** with a shared global byte budget (default 6 GB):
 - **Pass 1 (QDA-first):** Downloads only analysis files (QDA extensions) across all repos. Retries previously failed downloads. For Columbia, saves full JSON metadata per project.
 - **Pass 2 (remaining):** Downloads primary and additional data files from Harvard Dataverse projects until the budget is exhausted.
 
-If `--qda-only` is passed, Pass 2 is skipped entirely.
-
-Harvard Dataverse files download via `/api/access/datafile/<fileId>`. Columbia content is streaming-only — the harvester saves the full API metadata JSON as `metadata.json` in each project’s directory.
+Harvard Dataverse files download via `/api/access/datafile/<fileId>`. Columbia content is streaming-only, the harvester saves the full API metadata JSON as `metadata.json` in each project’s directory.
 
 ### Phase 3 — Export
 
-Exports the database to CSV files, separated by repository. Each repo gets its own directory under `exports/` with `projects.csv`, `files.csv`, and `technical_challenges.csv`. A `combined/` directory merges everything.
+Exports the database to CSV files, separated by repository. Each repo gets its own directory under `exports/` with `projects.csv`, `files.csv`, `keywords.csv`, `person_role.csv`, `licenses.csv`, and `technical_challenges.csv`. A `combined/` directory merges everything.
+
+---
+
+## Part 2 — Classification
+
+After acquisition, the pipeline classifies the harvested catalog on two independent
+axes:
+
+### 1. Project type
+
+Every project gets a `type` (`PROJECT_TYPE` enum), derived **from its file manifest**
+(reusing the `file_category` computed during acquisition no new extension lists):
+
+- `QDA_PROJECT` : has a QDA analysis file
+- `QD_PROJECT` : no QDA file, but has primary data files
+- `OTHER_PROJECT` : has files, but no primary data files
+- `NOT_A_PROJECT` : nothing can be derived about file types
+
+### 2. ISIC Rev. 5 division
+
+Every `QDA_PROJECT` and `QD_PROJECT` —d and each of its **primary data files**
+individually — is classified into an **ISIC Rev. 5 division** using a dependency-light
+**TF-IDF + cosine-similarity** classifier (`pipeline/classifier.py`, standard library
+only) over the 86-division corpus in `pipeline/data/isic_taxonomy.json`. That corpus is
+built once from the official ISIC5 workbook by `build_isic_taxonomy.py` (Title + Includes
+text; `Excludes` dropped as a negative signal). The classifier records:
+
+- `primary_class` (division code, e.g. `R86`) and an optional `secondary_class`
+  (runner-up, only above a similarity ratio),
+- a persisted `classification_confidence` with a configurable floor — weak matches are
+  left `NULL` rather than forced into a wrong division (**no default bucket**),
+- searchable `tags` (top TF-IDF terms), stored separately from human keywords.
+
+### Deliverables (spec Step 4)
+
+- **`23221189-sq26-classification.db`** : derived from the operational DB
+  (submission schema + classification columns; git-tag `classification-results`).
+- **`exports/classification/23221189-sq26-classification.xlsx`** : the required table
+  (`repository_id, project_type, project_title, primary_class, secondary_class, no_project_files`),
+  styled, with a Summary sheet.
+- **`exports/classification/23221189-sq26-classification-report.pdf`** : a professional
+  **vector** PDF (reportlab): cover page, per-repository histograms (full class-name
+  bins, counts on bars), top-20 ranked tables, and comments.
+- Per-repository statistics + a data-challenges summary printed to the console.
 
 ---
 
@@ -131,7 +175,11 @@ Exports the database to CSV files, separated by repository. Each repo gets its o
 
 - **Database** — SQLite with WAL mode and foreign key enforcement. Five tables: `projects`, `files`, `keywords`, `person_role`, and `licenses`. Column names follow the schema: `file_name`, `status` with `DOWNLOAD_RESULT` enum (`SUCCEEDED`, `FAILED_TOO_LARGE`, `FAILED_SERVER_UNRESPONSIVE`, `FAILED_LOGIN_REQUIRED`). Supports upsert on `(source_repository, source_id)` to prevent duplicates.
 
-- **Orchestrator** — Factory pattern for creating harvesters based on repository type. Coordinates the three pipeline phases. Downloads use a two-pass strategy: Pass 1 fetches QDA (analysis) files first, Pass 2 fetches remaining files. Both share a global byte budget (`MAX_TOTAL_DOWNLOAD_GB`).
+- **Orchestrator** — Factory pattern for creating harvesters based on repository type. Coordinates the pipeline phases. Downloads use a two-pass strategy: Pass 1 fetches QDA (analysis) files first, Pass 2 fetches remaining files. Both share a global byte budget (`MAX_TOTAL_DOWNLOAD_GB`). Also exposes `run_classification()` — the Part 2 phase that derives project types and runs the ISIC classifier over `QDA_PROJECT` + `QD_PROJECT` projects and their primary files.
+
+- **Classifier** (`pipeline/classifier.py`) — Part 2 engine, **standard library only**. `derive_project_type()` reduces a project's file categories to a `PROJECT_TYPE`; `IsicClassifier` fits a TF-IDF model over the 86 ISIC divisions and ranks project/file text by cosine similarity (no default bucket, similarity-gated secondary, persisted confidence, tags).
+
+- **Reports** (`pipeline/reports.py`) — Part 2 deliverables. `export_xlsx()` (openpyxl) writes the six-column table; `generate_pdf()` (reportlab) builds the professional vector report; `print_statistics()` prints per-repo stats and the data-challenges summary. Report dependencies are imported lazily, so the acquisition pipeline never requires them.
 
 ---
 
@@ -139,7 +187,7 @@ Exports the database to CSV files, separated by repository. Each repo gets its o
 
 ### Prerequisites
 
-- Python 3.10+ (developed on 3.13)
+- Python 3.10+
 - `pip`
 
 ### Installation
@@ -150,7 +198,9 @@ cd QDArchive-Project
 pip install -r requirements.txt
 ```
 
-The only external dependency is `requests`.
+**Part 1 (acquisition)** needs only `requests`. **Part 2 (classification)** adds two
+report/export libraries — `openpyxl` (XLSX) and `reportlab` (vector PDF); the classifier
+core itself is standard-library only. All three are listed in `requirements.txt`.
 
 ### Running the Pipeline
 
@@ -173,6 +223,12 @@ python run_pipeline.py --qda-only
 
 # Verbose logging
 python run_pipeline.py --log-level DEBUG
+
+# Part 2 — classify the existing database + generate deliverables (classification DB, XLSX, PDF)
+python run_pipeline.py --classify-only
+
+# Run acquisition, then Part 2 classification, in one go
+python run_pipeline.py --classify
 ```
 
 ### Exporting to CSV
@@ -207,6 +263,10 @@ All settings live in `pipeline/config.py`:
 | `REPOSITORIES` | 2 repos | Repository definitions (URL, type, rate limit) |
 | `BATCH_COMMIT_SIZE` | 50 | Commit to DB every N operations (batch writes) |
 | `PROGRESS_FILE` | `qdarchive.progress.json` | Path to harvest progress/resume state file |
+| `ISIC_TAXONOMY_PATH` | `pipeline/data/isic_taxonomy.json` | ISIC Rev. 5 division corpus (Part 2) |
+| `SECONDARY_MIN_RATIO` | 0.6 | Report a `secondary_class` only if its similarity ≥ this × the primary |
+| `MIN_PRIMARY_CONFIDENCE` | 0.05 | Below this cosine similarity, a project/file is left unclassified (NULL) |
+| `CLASSIFICATION_TAG_COUNT` | 8 | Number of top TF-IDF terms kept as searchable tags per project |
 
 The 25 search queries are organized into a **3-tier system** defined in `pipeline/config.py`:
 
@@ -229,10 +289,11 @@ QDA extensions are recognized from 9 tools (42 extensions total):
 
 ## Database Schema
 
-The project ships **two SQLite databases**:
+The project ships **three SQLite databases**:
 
-- **`23221189-sq26-full.db`** — the *operational* database written to by the pipeline. Six tables (the five below plus `technical_challenges` for harvest-error logging) and extra analytics columns on `projects`/`files` (QDA counts, raw API metadata, download classification, `matched_queries`, etc.).
-- **`23221189-sq26.db`** — the *submission* database. Stripped copy containing only the five required tables with only required columns, and only enum-valid values for `FILES.status`, `PERSON_ROLE.role`, and `LICENSES.license`.
+- **`23221189-sq26-full.db`** — the *operational* database written to by the pipeline. Six tables (the five below plus `technical_challenges` for harvest-error logging), extra analytics columns on `projects`/`files` (QDA counts, raw API metadata, `matched_queries`, etc.), and the Part 2 classification columns (`type`, `primary_class`, `secondary_class`, `classification_confidence`, `tags` on projects; `primary_class`, `secondary_class`, `classification_confidence` on files).
+- **`23221189-sq26.db`** — the *Part 1 submission* database. Stripped copy containing only the five required tables with only required columns, and only enum-valid values for `FILES.status`, `PERSON_ROLE.role`, and `LICENSES.license`. **Not modified by Part 2.**
+- **`23221189-sq26-classification.db`** — the *Part 2 deliverable*. The submission schema **plus** the classification columns on `projects` and `files`, derived from the operational DB by `sub_db.py`.
 
 The five required tables (present in both DBs):
 
@@ -283,6 +344,30 @@ Columbia's Oral History Archive contains qualitative *primary data* (audio/video
 
 ---
 
+## Classification Results
+
+Project types across all 2,285 projects:
+
+| Project type | Count |
+|--------------|-------|
+| `QDA_PROJECT` | 117 |
+| `QD_PROJECT` | 1,447 |
+| `OTHER_PROJECT` | 281 |
+| `NOT_A_PROJECT` | 440 |
+
+Of the **1,564** classifiable projects (QDA + QD), **1,525** received an ISIC Rev. 5
+division (39 were left unclassified — no default bucket), and **13,829** primary data
+files were classified individually. Dominant primary class: Harvard Dataverse → `K63`
+(computing / data processing); Columbia Oral History → `E36`.
+
+> **Note on accuracy.** TF-IDF over sparse metadata produces some lexical false
+> positives (e.g. Columbia oral histories matching `E36 “Water collection”` via the
+> library word *“collection”*). The persisted `classification_confidence` column exposes
+> these, and weak matches are left `NULL` rather than mis-assigned — the same limitation
+> present in every comparable implementation.
+
+---
+
 ## Reproducibility
 
 The pipeline is idempotent. Running it again will:
@@ -297,12 +382,17 @@ rm 23221189-sq26-full.db
 rm 23221189-sq26.db
 python run_pipeline.py --harvest-only
 python export_csv.py
-# Rebuild the grader-facing submission DB from the operational DB
-# (builder script is kept locally, not in the repo yet)
+# Rebuild the Part 1 submission DB from the operational DB
 python sub_db.py
+# Part 2 — classify + build the classification DB + XLSX + PDF
+python run_pipeline.py --classify-only
 ```
 
-The downloaded `data/` folder and CSV `exports/` are gitignored; both operational and submission `.db` files are version-controlled so reviewers can inspect the harvested metadata without running the pipeline.
+The downloaded `data/` folder, `docs/` folder, and CSV `exports/` are gitignored
+(except the Part 2 deliverables under `exports/classification/`); the operational,
+submission, and classification `.db` files and `sub_db.py` (a hard dependency of
+the classification phase) are version-controlled so reviewers can inspect the
+results and rebuild the derived DBs without running the pipeline.
 
 ---
 
@@ -318,17 +408,15 @@ The downloaded `data/` folder and CSV `exports/` are gitignored; both operationa
 
 - **No cross-repository deduplication** — The same dataset could theoretically appear on multiple repositories. Dedup by DOI is a planned enhancement.
 
-- **Classification is Part 2** — File classification into qualitative research categories hasn't started yet. The current `file_type` field uses a simple extension-based approach (analysis vs. primary vs. additional).
+- **Classification is lexical, not semantic** — Part 2 'Classification' uses a TF-IDF + cosine classifier over the ISIC Rev. 5 division corpus. It works from project metadata and file names (file *content* is not read), so sparse or ambiguous metadata yields some weak/false matches. Confidence is persisted and weak matches are left `NULL` rather than forced into a bucket.
 
 ---
 
 ## Future Work
 
-- **Part 2 — Classification:** Categorize harvested datasets by qualitative research methodology, data type, and reuse potential.
 - **Part 3 — Analysis:** Analyze the landscape of qualitative research data across repositories.
-- **Cross-repository deduplication** by DOI.
 - **Additional repositories** — The broader QDArchive project identified 20+ repositories; only 2 are assigned to this pipeline so far.
-- **Richer file classification** beyond extension-based heuristics.
+- **Richer classification** — optional file-content extraction and semantic (embedding-based) similarity beyond the current lexical TF-IDF.
 
 ---
 
